@@ -1010,7 +1010,218 @@ function drawMultiWave(rowIdx, segments, n, color) {
   });
 }
 
-setStatus('Step 4 完了: 波形描画（バイナリ矩形波・多値台形波・遷移エッジ）実装済み');
+// ════════════════════════════════════════════════
+//  Step 5: 信号ラベル・レベル名の編集UI
+// ════════════════════════════════════════════════
+
+// ── ラベル列のヒットテスト ──
+// クリック座標がどの信号のどの要素に当たるか判定する
+// 返値: { type: 'sigName'|'level', sigId, levelIdx } or null
+function hitTestLabel(x, y) {
+  if (x > LABEL_WIDTH) return null;
+
+  for (let i = 0; i < state.signals.length; i++) {
+    const sig  = state.signals[i];
+    const rowY = rowToY(i);
+    if (y < rowY || y >= rowY + ROW_HEIGHT) continue;
+
+    const n = sig.levels.length;
+
+    // 各レベル名の当たり判定（右寄せテキスト周辺 ±8px）
+    for (let vi = 0; vi < n; vi++) {
+      const ly = valueToY(i, vi, n);
+      if (Math.abs(y - ly) < 9) {
+        return { type: 'level', sigId: sig.id, levelIdx: vi };
+      }
+    }
+
+    // 信号名（行の左上エリア）
+    return { type: 'sigName', sigId: sig.id };
+  }
+  return null;
+}
+
+// ── インライン編集オーバーレイ ──
+// Canvas上に <input> を重ねて表示する
+let _inlineInput = null;
+
+function showInlineInput(x, y, width, initVal, onCommit) {
+  removeInlineInput();
+
+  const scroll  = document.getElementById('canvas-scroll');
+  const scrollRect = scroll.getBoundingClientRect();
+  const canvasRect = canvas.getBoundingClientRect();
+
+  const inp = document.createElement('input');
+  inp.type  = 'text';
+  inp.value = initVal;
+  inp.style.cssText = `
+    position: absolute;
+    left:   ${x - scroll.scrollLeft}px;
+    top:    ${y - scroll.scrollTop}px;
+    width:  ${width}px;
+    height: 20px;
+    padding: 1px 4px;
+    font-size: 11px;
+    font-family: Segoe UI, Meiryo, sans-serif;
+    border: 1.5px solid #3b82f6;
+    border-radius: 3px;
+    background: #fff;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+    z-index: 50;
+    outline: none;
+  `;
+
+  function commit() {
+    const val = inp.value.trim();
+    removeInlineInput();
+    if (val) onCommit(val);
+  }
+
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter')  commit();
+    if (e.key === 'Escape') removeInlineInput();
+    e.stopPropagation();
+  });
+  inp.addEventListener('blur', commit);
+
+  scroll.appendChild(inp);
+  _inlineInput = inp;
+  inp.focus();
+  inp.select();
+}
+
+function removeInlineInput() {
+  if (_inlineInput) {
+    _inlineInput.removeEventListener('blur', ()=>{});
+    _inlineInput.remove();
+    _inlineInput = null;
+  }
+}
+
+// ── ラベル列クリックの処理 ──
+function handleLabelClick(x, y) {
+  const hit = hitTestLabel(x, y);
+  if (!hit) return false;
+
+  const scroll = document.getElementById('canvas-scroll');
+  const ox = scroll.scrollLeft;
+  const oy = scroll.scrollTop;
+
+  if (hit.type === 'sigName') {
+    const sig  = state.signals.find(s => s.id === hit.sigId);
+    const rowI = state.signals.indexOf(sig);
+    const iy   = rowToY(rowI) + 4;
+    showInlineInput(8, iy, LABEL_WIDTH - 12, sig.name, newName => {
+      saveHistory();
+      sig.name = newName;
+      refreshAll();
+    });
+    return true;
+  }
+
+  if (hit.type === 'level') {
+    const sig    = state.signals.find(s => s.id === hit.sigId);
+    const rowI   = state.signals.indexOf(sig);
+    const vi     = hit.levelIdx;
+    const ly     = valueToY(rowI, vi, sig.levels.length);
+    const inputW = LABEL_WIDTH - 12;
+    showInlineInput(LABEL_WIDTH - inputW - 2, ly - 10, inputW, sig.levels[vi], newLabel => {
+      saveHistory();
+      sig.levels[vi] = newLabel;
+      // イベントの value インデックスは変えず、ラベルだけ変更
+      refreshAll();
+    });
+    return true;
+  }
+
+  return false;
+}
+
+// ── サイドバー信号名クリックでもインライン編集を開く ──
+// （Step 2 の openEditSignalModal を差し替え）
+function openEditSignalModal(sigId) {
+  const sig = state.signals.find(s => s.id === sigId);
+  if (!sig) return;
+  _modalMode = 'edit';
+  _editSigId = sigId;
+  document.getElementById('modal-signal-title').textContent = '信号を編集';
+  document.getElementById('modal-sig-name').value = sig.name;
+  document.getElementById('modal-binary-opts').style.display = sig.type === 'binary' ? '' : 'none';
+  document.getElementById('modal-multi-opts').style.display  = sig.type === 'multi'  ? '' : 'none';
+  if (sig.type === 'binary') {
+    document.getElementById('modal-on-label').value  = sig.levels[0];
+    document.getElementById('modal-off-label').value = sig.levels[1];
+  } else {
+    buildLevelRows(sig.levels);
+  }
+  document.getElementById('modal-signal').classList.add('open');
+  document.getElementById('modal-sig-name').focus();
+}
+
+// モーダルOK時にレベル変更も反映
+const _origModalOk = document.getElementById('modal-signal-ok');
+_origModalOk.addEventListener('click', () => {
+  if (_modalMode !== 'edit') return;
+  const sig = state.signals.find(s => s.id === _editSigId);
+  if (!sig) return;
+  if (sig.type === 'binary') {
+    const on  = document.getElementById('modal-on-label').value.trim()  || 'ON';
+    const off = document.getElementById('modal-off-label').value.trim() || 'OFF';
+    saveHistory();
+    sig.levels[0] = on;
+    sig.levels[1] = off;
+    refreshAll();
+  } else {
+    const rows   = document.querySelectorAll('#modal-levels-container .level-row input');
+    const newLvs = [...rows].map(r => r.value.trim() || '?');
+    if (newLvs.length < 2) { alert('レベルは2つ以上必要です'); return; }
+    saveHistory();
+    // レベル数が変わった場合、既存のイベント value をクランプ
+    sig.levels = newLvs;
+    state.events
+      .filter(e => e.signalId === sig.id)
+      .forEach(e => { if (e.value >= newLvs.length) e.value = newLvs.length - 1; });
+    refreshAll();
+  }
+}, { once: false });
+
+// ── Canvas クリックでラベル編集を優先処理 ──
+// (Step 6 のクリックハンドラと統合するため関数として公開)
+function onCanvasClick(e) {
+  if (e.button !== 0) return;
+  const rect = canvas.getBoundingClientRect();
+  const scroll = document.getElementById('canvas-scroll');
+  const x = e.clientX - rect.left + scroll.scrollLeft;
+  const y = e.clientY - rect.top  + scroll.scrollTop;
+
+  // ラベル列クリック → 編集
+  if (x < LABEL_WIDTH) {
+    handleLabelClick(x, y);
+    return;
+  }
+  // 波形エリアのクリックは Step 6 で実装
+}
+
+canvas.addEventListener('click',       onCanvasClick);
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+// ── カーソル切り替え（ラベル列はテキスト編集カーソル）──
+canvas.addEventListener('mousemove', e => {
+  const rect   = canvas.getBoundingClientRect();
+  const scroll = document.getElementById('canvas-scroll');
+  const x = e.clientX - rect.left + scroll.scrollLeft;
+  const y = e.clientY - rect.top  + scroll.scrollTop;
+
+  if (x < LABEL_WIDTH) {
+    const hit = hitTestLabel(x, y);
+    canvas.style.cursor = hit ? 'text' : 'default';
+  } else {
+    canvas.style.cursor = state.tool === 'select' ? 'default' : 'crosshair';
+  }
+});
+
+setStatus('Step 5 完了: ラベル列クリックで信号名・レベル名をインライン編集可能');
 </script>
 
 </body>
