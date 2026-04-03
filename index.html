@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>タイミングチャート</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', Meiryo, sans-serif;
+      font-size: 13px;
+      background: #f0f2f5;
+      color: #222;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── ツールバー ── */
+    #toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      background: #1e2a3a;
+      color: #fff;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+
+    #toolbar h1 {
+      font-size: 14px;
+      font-weight: 600;
+      margin-right: 8px;
+      white-space: nowrap;
+    }
+
+    .tb-sep {
+      width: 1px;
+      height: 22px;
+      background: #445;
+      margin: 0 4px;
+    }
+
+    .tb-btn {
+      padding: 4px 12px;
+      border: 1px solid #556;
+      border-radius: 4px;
+      background: #2e3f55;
+      color: #dde;
+      cursor: pointer;
+      font-size: 12px;
+      white-space: nowrap;
+      transition: background 0.15s;
+    }
+    .tb-btn:hover { background: #3a5070; }
+    .tb-btn.primary { background: #2563eb; border-color: #3b82f6; color: #fff; }
+    .tb-btn.primary:hover { background: #1d4ed8; }
+    .tb-btn.danger  { background: #7f1d1d; border-color: #ef4444; color: #fca5a5; }
+    .tb-btn.danger:hover  { background: #991b1b; }
+
+    .tb-label { font-size: 11px; color: #99a; white-space: nowrap; }
+
+    /* ── メインエリア ── */
+    #main {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+    }
+
+    /* ── 左パネル ── */
+    #sidebar {
+      width: 220px;
+      flex-shrink: 0;
+      background: #fff;
+      border-right: 1px solid #dde;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #sidebar-header {
+      padding: 8px 10px;
+      font-weight: 600;
+      font-size: 12px;
+      color: #556;
+      border-bottom: 1px solid #eee;
+      background: #f7f8fa;
+    }
+
+    #signal-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 4px 0;
+    }
+
+    .signal-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-bottom: 1px solid #f0f0f0;
+      cursor: default;
+      transition: background 0.1s;
+    }
+    .signal-item:hover { background: #f5f8ff; }
+    .signal-item.selected { background: #dbeafe; }
+
+    .signal-item .drag-handle {
+      color: #bbb;
+      cursor: grab;
+      font-size: 14px;
+      flex-shrink: 0;
+      user-select: none;
+    }
+
+    .signal-item .sig-name {
+      flex: 1;
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      cursor: pointer;
+    }
+    .signal-item .sig-name:hover { text-decoration: underline; }
+
+    .signal-item .sig-type-badge {
+      font-size: 10px;
+      padding: 1px 5px;
+      border-radius: 10px;
+      background: #e0e7ff;
+      color: #4338ca;
+      flex-shrink: 0;
+    }
+    .signal-item .sig-type-badge.multi {
+      background: #fef3c7;
+      color: #92400e;
+    }
+
+    .signal-item .del-btn {
+      color: #ccc;
+      cursor: pointer;
+      font-size: 14px;
+      flex-shrink: 0;
+      line-height: 1;
+    }
+    .signal-item .del-btn:hover { color: #ef4444; }
+
+    #sidebar-footer {
+      padding: 8px 10px;
+      border-top: 1px solid #eee;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    #sidebar-footer button {
+      width: 100%;
+      padding: 5px;
+      border-radius: 4px;
+      border: 1px solid #ccd;
+      background: #f7f8fa;
+      cursor: pointer;
+      font-size: 12px;
+      transition: background 0.1s;
+    }
+    #sidebar-footer button:hover { background: #e8eaf0; }
+
+    /* ── キャンバスエリア ── */
+    #canvas-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      background: #f0f2f5;
+      overflow: hidden;
+    }
+
+    #canvas-scroll {
+      flex: 1;
+      overflow: auto;
+      position: relative;
+    }
+
+    #chart-canvas {
+      display: block;
+      cursor: crosshair;
+      background: #fff;
+    }
+
+    /* ── ステータスバー ── */
+    #statusbar {
+      padding: 3px 12px;
+      font-size: 11px;
+      color: #778;
+      background: #e8eaf0;
+      border-top: 1px solid #d0d4dc;
+      flex-shrink: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ── モーダル ── */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+
+    .modal {
+      background: #fff;
+      border-radius: 8px;
+      padding: 20px 24px;
+      min-width: 300px;
+      max-width: 420px;
+      width: 90%;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+    }
+    .modal h2 { font-size: 15px; margin-bottom: 14px; color: #1e2a3a; }
+    .modal label { display: block; font-size: 12px; color: #556; margin-bottom: 3px; margin-top: 10px; }
+    .modal input, .modal select {
+      width: 100%;
+      padding: 6px 8px;
+      border: 1px solid #ccd;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    .modal input:focus, .modal select:focus { outline: 2px solid #3b82f6; border-color: transparent; }
+    .modal .modal-levels { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+    .modal .level-row { display: flex; gap: 6px; align-items: center; }
+    .modal .level-row input { flex: 1; }
+    .modal .level-row button { padding: 3px 8px; border: 1px solid #ccd; border-radius: 3px; background: #f5f5f5; cursor: pointer; font-size: 11px; }
+    .modal .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+    .modal .modal-actions button { padding: 6px 18px; border-radius: 4px; border: 1px solid #ccd; cursor: pointer; font-size: 13px; }
+    .modal .modal-actions .ok { background: #2563eb; color: #fff; border-color: #2563eb; }
+    .modal .modal-actions .ok:hover { background: #1d4ed8; }
+    .modal .modal-actions .cancel { background: #fff; }
+    .modal .modal-actions .cancel:hover { background: #f5f5f5; }
+  </style>
+</head>
+<body>
+
+<!-- ツールバー -->
+<div id="toolbar">
+  <h1>⏱ タイミングチャート</h1>
+  <div class="tb-sep"></div>
+  <span class="tb-label">ツール:</span>
+  <button class="tb-btn primary" id="btn-tool-select"  title="選択・移動">選択</button>
+  <button class="tb-btn"         id="btn-tool-edge"    title="遷移点を追加">遷移追加</button>
+  <button class="tb-btn"         id="btn-tool-annot"   title="時間アノテーション">矢印注釈</button>
+  <div class="tb-sep"></div>
+  <span class="tb-label">表示:</span>
+  <button class="tb-btn" id="btn-zoom-in">＋</button>
+  <button class="tb-btn" id="btn-zoom-out">－</button>
+  <button class="tb-btn" id="btn-grid-toggle">グリッド</button>
+  <div class="tb-sep"></div>
+  <button class="tb-btn" id="btn-undo">元に戻す</button>
+  <div class="tb-sep"></div>
+  <button class="tb-btn" id="btn-export-png">PNG保存</button>
+  <button class="tb-btn" id="btn-export-svg">SVG保存</button>
+  <button class="tb-btn" id="btn-save-json">JSON保存</button>
+  <button class="tb-btn" id="btn-load-json">JSON読込</button>
+  <input type="file" id="file-input" accept=".json" style="display:none">
+</div>
+
+<!-- メイン -->
+<div id="main">
+
+  <!-- 左パネル -->
+  <div id="sidebar">
+    <div id="sidebar-header">信号一覧</div>
+    <div id="signal-list"><!-- JS で生成 --></div>
+    <div id="sidebar-footer">
+      <button id="btn-add-binary">＋ バイナリ信号を追加</button>
+      <button id="btn-add-multi">＋ 多値信号を追加</button>
+    </div>
+  </div>
+
+  <!-- キャンバスエリア -->
+  <div id="canvas-area">
+    <div id="canvas-scroll">
+      <canvas id="chart-canvas"></canvas>
+    </div>
+    <div id="statusbar">準備完了 | クリック: 遷移点を追加 | 右クリック: 削除</div>
+  </div>
+
+</div>
+
+<!-- 信号追加/編集モーダル -->
+<div class="modal-overlay" id="modal-signal">
+  <div class="modal">
+    <h2 id="modal-signal-title">信号を追加</h2>
+    <label>信号名</label>
+    <input type="text" id="modal-sig-name" placeholder="例: 信号A">
+    <div id="modal-binary-opts">
+      <label>ONラベル</label>
+      <input type="text" id="modal-on-label" value="ON">
+      <label>OFFラベル</label>
+      <input type="text" id="modal-off-label" value="OFF">
+    </div>
+    <div id="modal-multi-opts" style="display:none">
+      <label>レベル名（上から順に）</label>
+      <div class="modal-levels" id="modal-levels-container"></div>
+      <button id="btn-add-level" style="margin-top:6px;padding:3px 10px;border:1px solid #ccd;border-radius:3px;background:#f5f5f5;cursor:pointer;font-size:12px;">＋ レベルを追加</button>
+    </div>
+    <div class="modal-actions">
+      <button class="cancel" id="modal-signal-cancel">キャンセル</button>
+      <button class="ok"     id="modal-signal-ok">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- アノテーション編集モーダル -->
+<div class="modal-overlay" id="modal-annot">
+  <div class="modal">
+    <h2>矢印注釈の編集</h2>
+    <label>ラベル（例: 3s, 100ms）</label>
+    <input type="text" id="modal-annot-label" placeholder="3s">
+    <div class="modal-actions">
+      <button class="cancel" id="modal-annot-cancel">キャンセル</button>
+      <button class="ok danger" id="modal-annot-delete" style="background:#fee2e2;color:#991b1b;border-color:#fca5a5;">削除</button>
+      <button class="ok"    id="modal-annot-ok">OK</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────
+//  Step 1: 骨格のみ – コンソールで動作確認用
+// ─────────────────────────────────────────────
+console.log('タイミングチャート Step 1: 構造OK');
+
+// ── 定数 ──
+const LABEL_WIDTH  = 110; // 左の信号ラベル幅 (px)
+const ROW_HEIGHT   = 80;  // 1信号行の高さ (px)
+const ROW_PAD      = 16;  // 上下余白
+const WAVE_H       = ROW_HEIGHT - ROW_PAD * 2; // 波形の振幅高さ
+const HEADER_H     = 24;  // 時間軸ヘッダ高さ
+const ANNOT_AREA_H = 50;  // アノテーション行の高さ
+
+// ── アプリ状態 ──
+const state = {
+  signals: [],      // Signal[]
+  events:  [],      // Event[]
+  annots:  [],      // Annotation[]
+  tool: 'select',   // 'select' | 'edge' | 'annot'
+  scale: 80,        // px per second
+  totalTime: 10,    // 表示する合計秒数
+  showGrid: true,
+  history: [],      // Undo 用スナップショット
+  annotStep: null,  // アノテーション追加中の第1点
+  selectedAnnot: null,
+};
+
+// ── DOM 参照 ──
+const canvas   = document.getElementById('chart-canvas');
+const ctx      = canvas.getContext('2d');
+const statusEl = document.getElementById('statusbar');
+
+function setStatus(msg) { statusEl.textContent = msg; }
+
+// キャンバスサイズを計算してセット（後の Step で描画処理を追加）
+function resizeCanvas() {
+  const annotRows = state.annots.length > 0 ? 1 : 0;
+  const h = HEADER_H + state.signals.length * ROW_HEIGHT + annotRows * ANNOT_AREA_H + 40;
+  const w = Math.max(
+    document.getElementById('canvas-scroll').clientWidth,
+    LABEL_WIDTH + state.totalTime * state.scale + 60
+  );
+  canvas.width  = w;
+  canvas.height = h;
+}
+
+resizeCanvas();
+setStatus('Step 1 完了: 骨格構造の確認ができました');
+</script>
+
+</body>
+</html>
