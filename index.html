@@ -649,10 +649,200 @@ document.getElementById('btn-add-multi').addEventListener('click',  () => openAd
 // Undo ボタン
 document.getElementById('btn-undo').addEventListener('click', undo);
 
+// ════════════════════════════════════════════════
+//  Step 3: Canvasレンダリングエンジン
+// ════════════════════════════════════════════════
+
+// ── 座標変換ヘルパー ──
+function timeToX(t) {
+  return LABEL_WIDTH + t * state.scale;
+}
+function xToTime(x) {
+  return (x - LABEL_WIDTH) / state.scale;
+}
+function rowToY(rowIdx) {
+  return HEADER_H + rowIdx * ROW_HEIGHT;
+}
+// 行内の値インデックス → Y座標（0=最上位レベル=波形の上端）
+function valueToY(rowIdx, valueIdx, totalLevels) {
+  const top = rowToY(rowIdx) + ROW_PAD;
+  if (totalLevels <= 1) return top;
+  return top + (valueIdx / (totalLevels - 1)) * WAVE_H;
+}
+
+// ── メイン描画関数 ──
+function drawChart() {
+  resizeCanvas();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  drawBackground();
+  drawTimeAxis();
+  if (state.showGrid) drawGrid();
+  drawSignalLabels();
+  // 波形・アノテーションは Step 4 以降で追加
+  drawAnnotationArea();
+}
+
+// ── 背景・行の帯 ──
+function drawBackground() {
+  // キャンバス全体を白に
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // 信号行ごとに交互に薄い帯
+  state.signals.forEach((sig, i) => {
+    ctx.fillStyle = i % 2 === 0 ? '#fafbff' : '#f5f7fc';
+    ctx.fillRect(0, rowToY(i), canvas.width, ROW_HEIGHT);
+  });
+
+  // ラベル列の背景（常に白）
+  ctx.fillStyle = '#f7f8fa';
+  ctx.fillRect(0, 0, LABEL_WIDTH, canvas.height);
+
+  // ラベル列右端の縦線
+  ctx.strokeStyle = '#dde';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(LABEL_WIDTH, 0);
+  ctx.lineTo(LABEL_WIDTH, canvas.height);
+  ctx.stroke();
+}
+
+// ── 時間軸ヘッダ ──
+function drawTimeAxis() {
+  // ヘッダ背景
+  ctx.fillStyle = '#eef0f6';
+  ctx.fillRect(LABEL_WIDTH, 0, canvas.width - LABEL_WIDTH, HEADER_H);
+  ctx.strokeStyle = '#ccd';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, HEADER_H);
+  ctx.lineTo(canvas.width, HEADER_H);
+  ctx.stroke();
+
+  // 目盛り間隔を自動選択（画面上で最低 50px 間隔）
+  const rawStep = 50 / state.scale;
+  const niceSteps = [0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10];
+  const tickStep = niceSteps.find(s => s >= rawStep) || 10;
+
+  ctx.fillStyle = '#556';
+  ctx.font = '10px Segoe UI, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  let t = 0;
+  while (t <= state.totalTime + tickStep) {
+    const x = timeToX(t);
+    if (x > LABEL_WIDTH && x < canvas.width) {
+      // 目盛り線
+      ctx.strokeStyle = '#bbc';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, HEADER_H - 5);
+      ctx.lineTo(x, HEADER_H);
+      ctx.stroke();
+      // ラベル
+      const label = t < 1 ? (t * 1000).toFixed(0) + 'ms' : t.toFixed(tickStep < 1 ? 1 : 0) + 's';
+      ctx.fillText(label, x, HEADER_H / 2);
+    }
+    t = Math.round((t + tickStep) * 1000) / 1000;
+  }
+
+  // "時間" ラベル
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#99a';
+  ctx.fillText('時間', LABEL_WIDTH / 2, HEADER_H / 2);
+}
+
+// ── グリッド線 ──
+function drawGrid() {
+  const rawStep = 50 / state.scale;
+  const niceSteps = [0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10];
+  const tickStep = niceSteps.find(s => s >= rawStep) || 10;
+
+  ctx.strokeStyle = '#e8eaf0';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 3]);
+
+  let t = tickStep;
+  while (t <= state.totalTime) {
+    const x = timeToX(t);
+    ctx.beginPath();
+    ctx.moveTo(x, HEADER_H);
+    ctx.lineTo(x, canvas.height);
+    ctx.stroke();
+    t = Math.round((t + tickStep) * 1000) / 1000;
+  }
+  ctx.setLineDash([]);
+
+  // 行の区切り線
+  ctx.strokeStyle = '#dde';
+  ctx.lineWidth = 1;
+  state.signals.forEach((_, i) => {
+    const y = rowToY(i + 1);
+    ctx.beginPath();
+    ctx.moveTo(LABEL_WIDTH, y);
+    ctx.lineTo(canvas.width, y);
+    ctx.stroke();
+  });
+}
+
+// ── 信号ラベル ──
+function drawSignalLabels() {
+  state.signals.forEach((sig, i) => {
+    const cy = rowToY(i) + ROW_HEIGHT / 2;
+
+    // 信号名
+    ctx.fillStyle = '#1e2a3a';
+    ctx.font = 'bold 12px Segoe UI, Meiryo, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(sig.name, 8, cy);
+
+    // レベル名（右端）
+    const n = sig.levels.length;
+    ctx.font = '10px Segoe UI, monospace';
+    ctx.fillStyle = '#778';
+    sig.levels.forEach((lv, vi) => {
+      const y = valueToY(i, vi, n);
+      ctx.textAlign = 'right';
+      ctx.fillText(lv, LABEL_WIDTH - 6, y);
+    });
+  });
+}
+
+// ── アノテーション行（プレースホルダ）──
+function drawAnnotationArea() {
+  if (state.annots.length === 0) return;
+  const y = rowToY(state.signals.length);
+  ctx.fillStyle = '#f0f4ff';
+  ctx.fillRect(0, y, canvas.width, ANNOT_AREA_H);
+  ctx.strokeStyle = '#dde';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, y);
+  ctx.lineTo(canvas.width, y);
+  ctx.stroke();
+  // "アノテーション" ラベル
+  ctx.fillStyle = '#99a';
+  ctx.font = '10px Segoe UI, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('注釈', 8, y + ANNOT_AREA_H / 2);
+}
+
+// refreshAll に drawChart を組み込む
+const _origRefreshAll = refreshAll;
+function refreshAll() {
+  renderSidebar();
+  resizeCanvas();
+  drawChart();
+}
+
 // ── 起動 ──
 loadSampleData();
 refreshAll();
-setStatus('Step 2 完了: データモデル・CRUD・Undo実装済み | 信号数: ' + state.signals.length);
+setStatus('Step 3 完了: 時間軸・グリッド・ラベル描画エンジン実装済み');
 </script>
 
 </body>
