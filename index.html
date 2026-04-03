@@ -1990,7 +1990,249 @@ toolbar.appendChild(tbSep2);
 toolbar.appendChild(tbTimeLabel);
 toolbar.appendChild(totalTimeInput);
 
-setStatus('Step 8 完了: ドラッグ並び替え・色変更・全消去・総時間変更実装済み');
+// ════════════════════════════════════════════════
+//  Step 9: エクスポート機能
+// ════════════════════════════════════════════════
+
+// ── PNG保存 ──
+document.getElementById('btn-export-png').addEventListener('click', () => {
+  // 現在の描画をそのままダウンロード
+  drawChart(); // 最新状態を描画
+  const link = document.createElement('a');
+  link.download = 'timing-chart.png';
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+  setStatus('PNGを保存しました');
+});
+
+// ── SVG保存 ──
+document.getElementById('btn-export-svg').addEventListener('click', () => {
+  const svg = buildSVG();
+  const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.download = 'timing-chart.svg';
+  link.href = url;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setStatus('SVGを保存しました');
+});
+
+// ── SVG生成 ──
+function buildSVG() {
+  const W = canvas.width;
+  const H = canvas.height;
+  const lines = [];
+
+  lines.push(`<?xml version="1.0" encoding="UTF-8"?>`);
+  lines.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`);
+  lines.push(`<rect width="${W}" height="${H}" fill="#ffffff"/>`);
+
+  // ── 行背景 ──
+  state.signals.forEach((sig, i) => {
+    const y = rowToY(i);
+    const fill = i % 2 === 0 ? '#fafbff' : '#f5f7fc';
+    lines.push(`<rect x="0" y="${y}" width="${W}" height="${ROW_HEIGHT}" fill="${fill}"/>`);
+  });
+  // ラベル列背景
+  lines.push(`<rect x="0" y="0" width="${LABEL_WIDTH}" height="${H}" fill="#f7f8fa"/>`);
+  lines.push(`<line x1="${LABEL_WIDTH}" y1="0" x2="${LABEL_WIDTH}" y2="${H}" stroke="#dde" stroke-width="1"/>`);
+
+  // ── 時間軸ヘッダ ──
+  lines.push(`<rect x="${LABEL_WIDTH}" y="0" width="${W - LABEL_WIDTH}" height="${HEADER_H}" fill="#eef0f6"/>`);
+  lines.push(`<line x1="0" y1="${HEADER_H}" x2="${W}" y2="${HEADER_H}" stroke="#ccd" stroke-width="1"/>`);
+  lines.push(svgText(LABEL_WIDTH / 2, HEADER_H / 2, '時間', '#99a', 10, 'middle', 'center'));
+
+  // 目盛り
+  const rawStep = 50 / state.scale;
+  const niceSteps = [0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10];
+  const tickStep = niceSteps.find(s => s >= rawStep) || 10;
+  for (let t = 0; t <= state.totalTime + tickStep; t = Math.round((t + tickStep) * 1000) / 1000) {
+    const x = timeToX(t);
+    if (x <= LABEL_WIDTH || x >= W) continue;
+    lines.push(`<line x1="${x}" y1="${HEADER_H - 5}" x2="${x}" y2="${HEADER_H}" stroke="#bbc" stroke-width="1"/>`);
+    const lbl = t < 1 ? (t * 1000).toFixed(0) + 'ms' : t.toFixed(tickStep < 1 ? 1 : 0) + 's';
+    lines.push(svgText(x, HEADER_H / 2, lbl, '#556', 10, 'middle', 'center'));
+  }
+
+  // ── グリッド ──
+  if (state.showGrid) {
+    for (let t = tickStep; t <= state.totalTime; t = Math.round((t + tickStep) * 1000) / 1000) {
+      const x = timeToX(t);
+      lines.push(`<line x1="${x}" y1="${HEADER_H}" x2="${x}" y2="${H}" stroke="#e8eaf0" stroke-width="1" stroke-dasharray="3,3"/>`);
+    }
+    state.signals.forEach((_, i) => {
+      const y = rowToY(i + 1);
+      lines.push(`<line x1="${LABEL_WIDTH}" y1="${y}" x2="${W}" y2="${y}" stroke="#dde" stroke-width="1"/>`);
+    });
+  }
+
+  // ── 波形 ──
+  state.signals.forEach((sig, rowIdx) => {
+    const evs = getSortedEvents(sig.id);
+    const n   = sig.levels.length;
+    const endT = state.totalTime;
+    const segments = [];
+    for (let i = 0; i < evs.length; i++) {
+      const t0 = evs[i].time, val = evs[i].value;
+      const t1 = i + 1 < evs.length ? evs[i + 1].time : endT;
+      if (t1 > t0) segments.push({ t0, t1, val });
+    }
+
+    if (n === 2) {
+      // バイナリ
+      let path = '';
+      let firstMove = true;
+      segments.forEach((seg, si) => {
+        const x0 = timeToX(seg.t0), x1 = timeToX(seg.t1);
+        const y  = valueToY(rowIdx, seg.val, n);
+        if (firstMove) { path += `M${x0},${y}`; firstMove = false; }
+        if (si > 0 && segments[si-1].val !== seg.val) path += `L${x0},${y}`;
+        path += `L${x1},${y}`;
+      });
+      lines.push(`<path d="${path}" fill="none" stroke="${sig.color}" stroke-width="2"/>`);
+
+      // 遷移点の縦破線
+      segments.forEach((seg, si) => {
+        if (si === 0 || segments[si-1].val === seg.val) return;
+        const x  = timeToX(seg.t0);
+        const y0 = rowToY(rowIdx) + ROW_PAD / 2;
+        const y1 = rowToY(rowIdx) + ROW_HEIGHT - ROW_PAD / 2;
+        lines.push(`<line x1="${x}" y1="${y0}" x2="${x}" y2="${y1}" stroke="${sig.color}" stroke-width="1" stroke-dasharray="4,3" opacity="0.35"/>`);
+      });
+    } else {
+      // 多値
+      segments.forEach((seg, si) => {
+        const x0r = timeToX(seg.t0), x1r = timeToX(seg.t1);
+        const yT  = rowToY(rowIdx) + ROW_PAD;
+        const yB  = rowToY(rowIdx) + ROW_PAD + WAVE_H;
+        const yM  = valueToY(rowIdx, seg.val, n);
+        const hasL = si > 0, hasR = si < segments.length - 1;
+        const x0 = hasL ? x0r + MULTI_SLOPE : x0r;
+        const x1 = hasR ? x1r - MULTI_SLOPE : x1r;
+
+        lines.push(`<rect x="${x0}" y="${yT}" width="${x1-x0}" height="${yB-yT}" fill="${sig.color}" opacity="0.08"/>`);
+        lines.push(`<line x1="${x0}" y1="${yT}" x2="${x1}" y2="${yT}" stroke="${sig.color}" stroke-width="1.5"/>`);
+        lines.push(`<line x1="${x0}" y1="${yB}" x2="${x1}" y2="${yB}" stroke="${sig.color}" stroke-width="1.5"/>`);
+        if (hasL) {
+          lines.push(`<line x1="${x0r}" y1="${yM}" x2="${x0}" y2="${yT}" stroke="${sig.color}" stroke-width="1.5"/>`);
+          lines.push(`<line x1="${x0r}" y1="${yM}" x2="${x0}" y2="${yB}" stroke="${sig.color}" stroke-width="1.5"/>`);
+        }
+        if (hasR) {
+          lines.push(`<line x1="${x1r}" y1="${yM}" x2="${x1}" y2="${yT}" stroke="${sig.color}" stroke-width="1.5"/>`);
+          lines.push(`<line x1="${x1r}" y1="${yM}" x2="${x1}" y2="${yB}" stroke="${sig.color}" stroke-width="1.5"/>`);
+        }
+        const lv = sig.levels[seg.val];
+        if (x1 - x0 > 20) lines.push(svgText((x0+x1)/2, (yT+yB)/2, lv, sig.color, 11, 'middle', 'center', 'bold'));
+      });
+    }
+
+    // 信号名ラベル
+    const cy = rowToY(rowIdx) + ROW_HEIGHT / 2;
+    lines.push(svgText(8, cy, sig.name, '#1e2a3a', 12, 'middle', 'start', 'bold'));
+    sig.levels.forEach((lv, vi) => {
+      const ly = valueToY(rowIdx, vi, n);
+      lines.push(svgText(LABEL_WIDTH - 6, ly, lv, '#778', 10, 'middle', 'end'));
+    });
+  });
+
+  // ── アノテーション ──
+  if (state.annots.length > 0) {
+    const ry = rowToY(state.signals.length);
+    lines.push(`<rect x="0" y="${ry}" width="${W}" height="${ANNOT_AREA_H}" fill="#f8f9ff"/>`);
+    lines.push(`<line x1="0" y1="${ry}" x2="${W}" y2="${ry}" stroke="#dde" stroke-width="1"/>`);
+    lines.push(svgText(8, ry + ANNOT_AREA_H / 2, '注釈', '#aab', 10, 'middle', 'start'));
+
+    state.annots.forEach(a => {
+      // 縦破線
+      [a.t1, a.t2].forEach(t => {
+        const x = timeToX(t);
+        lines.push(`<line x1="${x}" y1="${HEADER_H}" x2="${x}" y2="${ry + ANNOT_AREA_H}" stroke="#888" stroke-width="1" stroke-dasharray="5,4" opacity="0.5"/>`);
+      });
+      // 矢印
+      const x1 = timeToX(a.t1), x2 = timeToX(a.t2);
+      const ay = ry + ANNOT_AREA_H / 2;
+      const AR = 7;
+      lines.push(`<line x1="${x1}" y1="${ay}" x2="${x2}" y2="${ay}" stroke="#2563eb" stroke-width="1.5"/>`);
+      lines.push(`<polygon points="${x1},${ay} ${x1+AR},${ay-AR*0.5} ${x1+AR},${ay+AR*0.5}" fill="#2563eb"/>`);
+      lines.push(`<polygon points="${x2},${ay} ${x2-AR},${ay-AR*0.5} ${x2-AR},${ay+AR*0.5}" fill="#2563eb"/>`);
+      lines.push(`<line x1="${x1}" y1="${ay-8}" x2="${x1}" y2="${ay+8}" stroke="#2563eb" stroke-width="1.5"/>`);
+      lines.push(`<line x1="${x2}" y1="${ay-8}" x2="${x2}" y2="${ay+8}" stroke="#2563eb" stroke-width="1.5"/>`);
+      if (a.label) {
+        const mx = (x1 + x2) / 2;
+        lines.push(`<rect x="${mx-20}" y="${ay-8}" width="40" height="16" fill="#f8f9ff" opacity="0.9"/>`);
+        lines.push(svgText(mx, ay, a.label, '#2563eb', 12, 'middle', 'center', 'bold'));
+      }
+    });
+  }
+
+  lines.push('</svg>');
+  return lines.join('\n');
+}
+
+function svgText(x, y, text, fill, size, dominantBaseline, textAnchor, fontWeight='normal') {
+  const esc = String(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return `<text x="${x}" y="${y}" fill="${fill}" font-size="${size}" font-family="Segoe UI,Meiryo,sans-serif" dominant-baseline="${dominantBaseline}" text-anchor="${textAnchor}" font-weight="${fontWeight}">${esc}</text>`;
+}
+
+// ── JSON保存 ──
+document.getElementById('btn-save-json').addEventListener('click', () => {
+  const data = {
+    version: 1,
+    totalTime: state.totalTime,
+    scale: state.scale,
+    showGrid: state.showGrid,
+    signals: state.signals,
+    events:  state.events,
+    annots:  state.annots,
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.download = 'timing-chart.json';
+  link.href = url;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setStatus('JSONを保存しました');
+});
+
+// ── JSON読込 ──
+document.getElementById('btn-load-json').addEventListener('click', () => {
+  document.getElementById('file-input').click();
+});
+
+document.getElementById('file-input').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try {
+      const data = JSON.parse(ev.target.result);
+      if (!data.signals || !data.events) throw new Error('フォーマットが不正です');
+      saveHistory();
+      state.signals   = data.signals   || [];
+      state.events    = data.events    || [];
+      state.annots    = data.annots    || [];
+      state.totalTime = data.totalTime || 10;
+      state.scale     = data.scale     || 80;
+      state.showGrid  = data.showGrid  !== undefined ? data.showGrid : true;
+      // idカウンタを最大値より大きくリセット
+      const allIds = [...state.signals, ...state.events, ...state.annots].map(o => o.id || 0);
+      _nextId = (allIds.length ? Math.max(...allIds) : 0) + 1;
+      // colorIdx をリセット
+      _colorIdx = state.signals.length;
+      document.querySelector('#toolbar input[type=number]').value = state.totalTime;
+      refreshAll();
+      setStatus(`「${file.name}」を読み込みました（信号数: ${state.signals.length}）`);
+    } catch (err) {
+      alert('JSONの読み込みに失敗しました: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+  e.target.value = ''; // 同じファイルを再度選択できるようリセット
+});
+
+setStatus('Step 9 完了: PNG・SVG・JSON の保存と読込が使えます');
 </script>
 
 </body>
