@@ -679,7 +679,7 @@ function drawChart() {
   drawTimeAxis();
   if (state.showGrid) drawGrid();
   drawSignalLabels();
-  // 波形・アノテーションは Step 4 以降で追加
+  drawWaveforms();
   drawAnnotationArea();
 }
 
@@ -842,7 +842,175 @@ function refreshAll() {
 // ── 起動 ──
 loadSampleData();
 refreshAll();
-setStatus('Step 3 完了: 時間軸・グリッド・ラベル描画エンジン実装済み');
+// ════════════════════════════════════════════════
+//  Step 4: 波形描画
+// ════════════════════════════════════════════════
+
+function drawWaveforms() {
+  state.signals.forEach((sig, rowIdx) => {
+    const evs = getSortedEvents(sig.id);
+    const n   = sig.levels.length;
+    const endT = state.totalTime;
+
+    // 描画区間リストを作成: [{t0, t1, value}, ...]
+    // evs[0] は必ず time=0 の初期値
+    const segments = [];
+    for (let i = 0; i < evs.length; i++) {
+      const t0  = evs[i].time;
+      const val = evs[i].value;
+      const t1  = i + 1 < evs.length ? evs[i + 1].time : endT;
+      if (t1 > t0) segments.push({ t0, t1, val });
+    }
+
+    ctx.save();
+    // 描画領域をキャンバス幅にクリップ
+    ctx.beginPath();
+    ctx.rect(LABEL_WIDTH, rowToY(rowIdx), canvas.width - LABEL_WIDTH, ROW_HEIGHT);
+    ctx.clip();
+
+    ctx.strokeStyle = sig.color;
+    ctx.lineWidth   = 2;
+    ctx.lineJoin    = 'miter';
+
+    if (n === 2) {
+      // ── バイナリ信号（矩形波）──
+      drawBinaryWave(rowIdx, segments, n, sig.color);
+    } else {
+      // ── 多値信号 ──
+      drawMultiWave(rowIdx, segments, n, sig.color);
+    }
+
+    ctx.restore();
+  });
+}
+
+// ── バイナリ波形 ──
+function drawBinaryWave(rowIdx, segments, n, color) {
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = 2;
+
+  let firstMove = true;
+  segments.forEach((seg, si) => {
+    const x0 = timeToX(seg.t0);
+    const x1 = timeToX(seg.t1);
+    const y  = valueToY(rowIdx, seg.val, n);
+
+    if (firstMove) {
+      ctx.moveTo(x0, y);
+      firstMove = false;
+    }
+
+    // 遷移エッジ（垂直線）: 前のセグメントと値が違う場合
+    if (si > 0 && segments[si - 1].val !== seg.val) {
+      ctx.lineTo(x0, y); // 垂直遷移
+    }
+
+    // 水平線
+    ctx.lineTo(x1, y);
+  });
+  ctx.stroke();
+
+  // 遷移点に小さい縦マーカー
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+  ctx.globalAlpha = 0.35;
+  segments.forEach((seg, si) => {
+    if (si === 0) return;
+    if (segments[si - 1].val === seg.val) return;
+    const x  = timeToX(seg.t0);
+    const y0 = rowToY(rowIdx) + ROW_PAD / 2;
+    const y1 = rowToY(rowIdx) + ROW_HEIGHT - ROW_PAD / 2;
+    ctx.beginPath();
+    ctx.setLineDash([4, 3]);
+    ctx.moveTo(x, y0);
+    ctx.lineTo(x, y1);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  });
+  ctx.globalAlpha = 1;
+}
+
+// ── 多値波形（台形エッジ）──
+const MULTI_SLOPE = 4; // エッジの水平幅 (px)
+
+function drawMultiWave(rowIdx, segments, n, color) {
+  segments.forEach((seg, si) => {
+    const x0raw = timeToX(seg.t0);
+    const x1raw = timeToX(seg.t1);
+    const yMid  = valueToY(rowIdx, seg.val, n);
+    const yTop  = rowToY(rowIdx) + ROW_PAD;
+    const yBot  = rowToY(rowIdx) + ROW_PAD + WAVE_H;
+
+    const hasLeft  = si > 0;
+    const hasRight = si < segments.length - 1;
+
+    const x0 = hasLeft  ? x0raw + MULTI_SLOPE : x0raw;
+    const x1 = hasRight ? x1raw - MULTI_SLOPE : x1raw;
+
+    // 上辺・下辺（水平線）
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x0, yTop);
+    ctx.lineTo(x1, yTop);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(x0, yBot);
+    ctx.lineTo(x1, yBot);
+    ctx.stroke();
+
+    // 塗りつぶし（半透明）
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.08;
+    ctx.fillRect(x0, yTop, x1 - x0, yBot - yTop);
+    ctx.globalAlpha = 1;
+
+    // 左側エッジ（菱形）
+    if (hasLeft) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth   = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(x0raw, yMid);
+      ctx.lineTo(x0raw + MULTI_SLOPE, yTop);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x0raw, yMid);
+      ctx.lineTo(x0raw + MULTI_SLOPE, yBot);
+      ctx.stroke();
+    }
+
+    // 右側エッジ
+    if (hasRight) {
+      ctx.beginPath();
+      ctx.moveTo(x1raw, yMid);
+      ctx.lineTo(x1raw - MULTI_SLOPE, yTop);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x1raw, yMid);
+      ctx.lineTo(x1raw - MULTI_SLOPE, yBot);
+      ctx.stroke();
+    }
+
+    // セグメントの中央にレベル名
+    const midX = (x0 + x1) / 2;
+    const segW  = x1 - x0;
+    if (segW > 20) {
+      const sig = state.signals.find(s => s.color === color);
+      const lv  = sig ? sig.levels[seg.val] : '';
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.85;
+      ctx.font = `bold ${Math.min(11, segW / lv.length * 1.2)}px monospace`;
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(lv, midX, yTop + (yBot - yTop) / 2);
+      ctx.globalAlpha = 1;
+    }
+  });
+}
+
+setStatus('Step 4 完了: 波形描画（バイナリ矩形波・多値台形波・遷移エッジ）実装済み');
 </script>
 
 </body>
