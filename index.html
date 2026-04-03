@@ -1510,7 +1510,268 @@ toolBtns.select.addEventListener('click', () => setTool('select'));
 toolBtns.edge.addEventListener('click',   () => setTool('edge'));
 toolBtns.annot.addEventListener('click',  () => setTool('annot'));
 
-setStatus('Step 6 完了: 遷移点の追加(クリック)・移動(ドラッグ)・削除(右クリック)実装済み');
+// ════════════════════════════════════════════════
+//  Step 7: 時間アノテーション
+// ════════════════════════════════════════════════
+
+// ── アノテーション行の描画（本実装）──
+// drawAnnotationArea() を上書き
+function drawAnnotationArea() {
+  if (state.annots.length === 0 && state.annotStep === null) return;
+
+  const y = rowToY(state.signals.length);
+  const h = ANNOT_AREA_H;
+
+  // 背景
+  ctx.fillStyle = '#f8f9ff';
+  ctx.fillRect(0, y, canvas.width, h);
+  ctx.strokeStyle = '#dde';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+
+  // ラベル
+  ctx.fillStyle = '#aab';
+  ctx.font = '10px Segoe UI, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('注釈', 8, y + h / 2);
+
+  // 各アノテーションを描画
+  state.annots.forEach(a => drawAnnot(a, y, h, false));
+
+  // 追加中のプレビュー
+  if (state.annotStep !== null && _annotPreviewX !== null) {
+    const t1 = state.annotStep;
+    const t2 = xToTime(_annotPreviewX);
+    drawAnnotPreview(Math.min(t1,t2), Math.max(t1,t2), y, h);
+    // 第1点の縦線プレビュー
+    drawAnnotDashedLine(state.annotStep, y);
+  }
+
+  // 全アノテーションの縦破線をキャンバス全体に描画
+  state.annots.forEach(a => {
+    drawAnnotDashedLine(a.t1, y);
+    drawAnnotDashedLine(a.t2, y);
+  });
+}
+
+// 縦破線（全行にわたって表示）
+function drawAnnotDashedLine(t, annotRowY) {
+  const x = timeToX(t);
+  ctx.save();
+  ctx.strokeStyle = '#888';
+  ctx.lineWidth   = 1;
+  ctx.setLineDash([5, 4]);
+  ctx.globalAlpha = 0.5;
+  ctx.beginPath();
+  ctx.moveTo(x, HEADER_H);
+  ctx.lineTo(x, annotRowY + ANNOT_AREA_H);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// 双方向矢印 + ラベルを描画
+function drawAnnot(a, rowY, rowH, isPreview) {
+  const x1   = timeToX(a.t1);
+  const x2   = timeToX(a.t2);
+  const ay   = rowY + rowH / 2;
+  const AR   = 7;   // 矢印の長さ
+  const color = isPreview ? '#94a3b8' : '#2563eb';
+
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle   = color;
+  ctx.lineWidth   = 1.5;
+  ctx.globalAlpha = isPreview ? 0.5 : 1;
+
+  // 水平線
+  ctx.beginPath();
+  ctx.moveTo(x1, ay);
+  ctx.lineTo(x2, ay);
+  ctx.stroke();
+
+  // 左矢印
+  ctx.beginPath();
+  ctx.moveTo(x1, ay);
+  ctx.lineTo(x1 + AR, ay - AR * 0.5);
+  ctx.lineTo(x1 + AR, ay + AR * 0.5);
+  ctx.closePath();
+  ctx.fill();
+
+  // 右矢印
+  ctx.beginPath();
+  ctx.moveTo(x2, ay);
+  ctx.lineTo(x2 - AR, ay - AR * 0.5);
+  ctx.lineTo(x2 - AR, ay + AR * 0.5);
+  ctx.closePath();
+  ctx.fill();
+
+  // 垂直の端線
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(x1, ay - 8); ctx.lineTo(x1, ay + 8); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x2, ay - 8); ctx.lineTo(x2, ay + 8); ctx.stroke();
+
+  // ラベル（中央）
+  const midX = (x1 + x2) / 2;
+  const lbl  = a.label || '';
+  ctx.font         = 'bold 12px Segoe UI, sans-serif';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  // 背景を抜く
+  const tw = ctx.measureText(lbl).width + 8;
+  ctx.fillStyle = '#f8f9ff';
+  ctx.globalAlpha = isPreview ? 0.4 : 0.9;
+  ctx.fillRect(midX - tw / 2, ay - 8, tw, 16);
+  ctx.globalAlpha = isPreview ? 0.5 : 1;
+  ctx.fillStyle = color;
+  ctx.fillText(lbl, midX, ay);
+
+  ctx.restore();
+}
+
+// プレビュー（ラベルなし）
+function drawAnnotPreview(t1, t2, rowY, rowH) {
+  drawAnnot({ t1, t2, label: '' }, rowY, rowH, true);
+}
+
+// ── アノテーションのヒットテスト ──
+function hitTestAnnot(x, y) {
+  if (state.annots.length === 0) return null;
+  const rowY = rowToY(state.signals.length);
+  if (y < rowY || y >= rowY + ANNOT_AREA_H) return null;
+
+  const ay = rowY + ANNOT_AREA_H / 2;
+  for (const a of state.annots) {
+    const x1 = timeToX(a.t1);
+    const x2 = timeToX(a.t2);
+    // 矢印線上 or 端点付近
+    if (x >= x1 - 6 && x <= x2 + 6 && Math.abs(y - ay) < 12) return a;
+  }
+  return null;
+}
+
+// ── アノテーション追加モードのクリック ──
+let _annotPreviewX = null;
+
+// mousemove でプレビューX座標を更新
+canvas.addEventListener('mousemove', e => {
+  if (state.tool !== 'annot') return;
+  const rect   = canvas.getBoundingClientRect();
+  const scroll = document.getElementById('canvas-scroll');
+  _annotPreviewX = e.clientX - rect.left + scroll.scrollLeft;
+  if (state.annotStep !== null) drawChart();
+}, false);
+
+canvas.addEventListener('click', e => {
+  if (e.button !== 0) return;
+  if (state.tool !== 'annot') return;
+
+  const rect   = canvas.getBoundingClientRect();
+  const scroll = document.getElementById('canvas-scroll');
+  const x = e.clientX - rect.left + scroll.scrollLeft;
+  const y = e.clientY - rect.top  + scroll.scrollTop;
+  if (x < LABEL_WIDTH) return;
+
+  const t = snapTime(xToTime(x));
+
+  if (state.annotStep === null) {
+    // 第1点
+    state.annotStep = t;
+    setStatus(`矢印注釈: 終了時刻をクリックしてください (開始: ${t.toFixed(3)}s)`);
+  } else {
+    // 第2点 → アノテーション追加 → ラベル入力モーダル
+    const t1 = Math.min(state.annotStep, t);
+    const t2 = Math.max(state.annotStep, t);
+    state.annotStep    = null;
+    _annotPreviewX     = null;
+
+    // ラベル入力モーダルを開く
+    _pendingAnnot = { t1, t2 };
+    document.getElementById('modal-annot-label').value = '';
+    document.getElementById('modal-annot-delete').style.display = 'none';
+    document.getElementById('modal-annot').classList.add('open');
+    document.getElementById('modal-annot-label').focus();
+    refreshAll();
+  }
+}, false);
+
+// 第1点設定後に Escape でキャンセル
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && state.annotStep !== null) {
+    state.annotStep = null;
+    _annotPreviewX  = null;
+    drawChart();
+    setStatus('矢印注釈をキャンセルしました');
+  }
+});
+
+// ── アノテーション右クリックで編集/削除 ──
+canvas.addEventListener('contextmenu', e => {
+  // Step6 と共存（波形エリアは Step6 が処理）
+  const rect   = canvas.getBoundingClientRect();
+  const scroll = document.getElementById('canvas-scroll');
+  const x = e.clientX - rect.left + scroll.scrollLeft;
+  const y = e.clientY - rect.top  + scroll.scrollTop;
+
+  const hit = hitTestAnnot(x, y);
+  if (!hit) return;
+
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  _pendingAnnot = hit;
+  document.getElementById('modal-annot-label').value = hit.label;
+  document.getElementById('modal-annot-delete').style.display = '';
+  document.getElementById('modal-annot').classList.add('open');
+  document.getElementById('modal-annot-label').focus();
+}, true); // capture で先に処理
+
+// ── アノテーションモーダルの制御 ──
+let _pendingAnnot = null;
+
+document.getElementById('modal-annot-cancel').addEventListener('click', () => {
+  document.getElementById('modal-annot').classList.remove('open');
+  _pendingAnnot = null;
+});
+
+document.getElementById('modal-annot-ok').addEventListener('click', () => {
+  const lbl = document.getElementById('modal-annot-label').value.trim();
+  if (_pendingAnnot) {
+    if (_pendingAnnot.id) {
+      updateAnnot(_pendingAnnot.id, lbl);
+    } else {
+      addAnnot(_pendingAnnot.t1, _pendingAnnot.t2, lbl);
+    }
+  }
+  document.getElementById('modal-annot').classList.remove('open');
+  _pendingAnnot = null;
+  refreshAll();
+});
+
+document.getElementById('modal-annot-delete').addEventListener('click', () => {
+  if (_pendingAnnot && _pendingAnnot.id) removeAnnot(_pendingAnnot.id);
+  document.getElementById('modal-annot').classList.remove('open');
+  _pendingAnnot = null;
+  refreshAll();
+});
+
+// Enterキーでモーダルを確定
+document.getElementById('modal-annot-label').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('modal-annot-ok').click();
+  if (e.key === 'Escape') document.getElementById('modal-annot-cancel').click();
+});
+
+// アノテーション行のカーソル変更
+canvas.addEventListener('mousemove', e => {
+  const rect   = canvas.getBoundingClientRect();
+  const scroll = document.getElementById('canvas-scroll');
+  const x = e.clientX - rect.left + scroll.scrollLeft;
+  const y = e.clientY - rect.top  + scroll.scrollTop;
+  if (hitTestAnnot(x, y)) canvas.style.cursor = 'pointer';
+}, false);
+
+setStatus('Step 7 完了: 矢印注釈の追加・編集・削除・プレビュー実装済み');
 </script>
 
 </body>
