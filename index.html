@@ -379,7 +379,280 @@ function resizeCanvas() {
 }
 
 resizeCanvas();
-setStatus('Step 1 完了: 骨格構造の確認ができました');
+
+// ════════════════════════════════════════════════
+//  Step 2: データモデル – Signal / Event / Annotation
+// ════════════════════════════════════════════════
+
+let _nextId = 1;
+function uid() { return _nextId++; }
+
+// ── Signal ──
+// {
+//   id: number,
+//   name: string,
+//   type: 'binary' | 'multi',
+//   levels: string[],   // binary: ['ON','OFF']  multi: ['10b','01b','00b'] (上→下順)
+//   color: string,      // 波形の色
+// }
+
+// ── Event ──
+// {
+//   id: number,
+//   signalId: number,
+//   time: number,       // 秒 (float)
+//   value: number,      // levels[] のインデックス (0 = 最上位レベル)
+// }
+// ※ time 昇順にソートして使う。time=0 より前に初期値として value=末尾レベルを仮定。
+
+// ── Annotation ──
+// {
+//   id: number,
+//   t1: number,   // 開始時刻 (秒)
+//   t2: number,   // 終了時刻 (秒)
+//   label: string,
+// }
+
+const COLORS = [
+  '#2563eb','#16a34a','#dc2626','#9333ea',
+  '#0891b2','#d97706','#db2777','#65a30d',
+];
+let _colorIdx = 0;
+function nextColor() { return COLORS[(_colorIdx++) % COLORS.length]; }
+
+// ── Signal CRUD ──
+function createSignal(name, type, levels) {
+  return { id: uid(), name, type, levels: [...levels], color: nextColor() };
+}
+
+function addSignal(sig) {
+  saveHistory();
+  state.signals.push(sig);
+  // 初期値: 各信号の最下位レベル(末尾インデックス)を time=0 に設定
+  state.events.push({ id: uid(), signalId: sig.id, time: 0, value: sig.levels.length - 1 });
+}
+
+function removeSignal(sigId) {
+  saveHistory();
+  state.signals = state.signals.filter(s => s.id !== sigId);
+  state.events  = state.events.filter(e => e.signalId !== sigId);
+}
+
+function updateSignalName(sigId, newName) {
+  saveHistory();
+  const s = state.signals.find(s => s.id === sigId);
+  if (s) s.name = newName;
+}
+
+// ── Event CRUD ──
+function addEvent(signalId, time, value) {
+  saveHistory();
+  // 同じ時刻に既存イベントがあれば上書き
+  const existing = state.events.find(e => e.signalId === signalId && Math.abs(e.time - time) < 0.001);
+  if (existing) { existing.value = value; return; }
+  state.events.push({ id: uid(), signalId, time, value });
+}
+
+function removeEvent(eventId) {
+  // time=0 のイベント（初期値）は削除しない
+  const ev = state.events.find(e => e.id === eventId);
+  if (!ev || ev.time === 0) return;
+  saveHistory();
+  state.events = state.events.filter(e => e.id !== eventId);
+}
+
+// 信号の time=t における現在値インデックスを返す
+function getValueAt(signalId, t) {
+  const evs = state.events
+    .filter(e => e.signalId === signalId && e.time <= t)
+    .sort((a, b) => b.time - a.time);
+  if (evs.length === 0) {
+    const sig = state.signals.find(s => s.id === signalId);
+    return sig ? sig.levels.length - 1 : 0;
+  }
+  return evs[0].value;
+}
+
+// 信号のイベントを時刻順に返す（time=0 の初期値含む）
+function getSortedEvents(signalId) {
+  return state.events
+    .filter(e => e.signalId === signalId)
+    .sort((a, b) => a.time - b.time);
+}
+
+// ── Annotation CRUD ──
+function addAnnot(t1, t2, label) {
+  saveHistory();
+  if (t1 > t2) [t1, t2] = [t2, t1];
+  state.annots.push({ id: uid(), t1, t2, label });
+}
+
+function removeAnnot(annotId) {
+  saveHistory();
+  state.annots = state.annots.filter(a => a.id !== annotId);
+}
+
+function updateAnnot(annotId, label) {
+  saveHistory();
+  const a = state.annots.find(a => a.id === annotId);
+  if (a) a.label = label;
+}
+
+// ── Undo ──
+const MAX_HISTORY = 30;
+
+function saveHistory() {
+  state.history.push(JSON.stringify({ signals: state.signals, events: state.events, annots: state.annots }));
+  if (state.history.length > MAX_HISTORY) state.history.shift();
+}
+
+function undo() {
+  if (state.history.length === 0) { setStatus('これ以上元に戻せません'); return; }
+  const snap = JSON.parse(state.history.pop());
+  state.signals = snap.signals;
+  state.events  = snap.events;
+  state.annots  = snap.annots;
+  // id カウンタをリセットしないよう最大値を維持
+  refreshAll();
+}
+
+// ── サンプルデータ投入（動作確認用）──
+function loadSampleData() {
+  const sigA = createSignal('信号A', 'binary', ['ON', 'OFF']);
+  const sigB = createSignal('信号B', 'binary', ['ON', 'OFF']);
+  const sigOut = createSignal('出力', 'multi', ['10b', '01b', '00b']);
+
+  addSignal(sigA);
+  addSignal(sigB);
+  addSignal(sigOut);
+
+  // 信号A: t=2 で OFF→ON
+  addEvent(sigA.id, 2, 0);  // ON (index 0)
+
+  // 信号B: t=3.5 で OFF→ON
+  addEvent(sigB.id, 3.5, 0); // ON (index 0)
+
+  // 出力: 00b→01b (t=2), 01b→10b (t=3.5), 10b→00b (t=6.5)
+  addEvent(sigOut.id, 2,   1); // 01b
+  addEvent(sigOut.id, 3.5, 0); // 10b
+  addEvent(sigOut.id, 6.5, 2); // 00b
+
+  // アノテーション: 3.5s ～ 6.5s = "3s"
+  addAnnot(3.5, 6.5, '3s');
+}
+
+// ── refreshAll: 描画＋サイドバー更新（後の Step で本実装）──
+function refreshAll() {
+  renderSidebar();
+  resizeCanvas();
+  // drawChart() は Step 3 以降で追加
+}
+
+// ── サイドバー仮描画 ──
+function renderSidebar() {
+  const list = document.getElementById('signal-list');
+  list.innerHTML = '';
+  state.signals.forEach((sig, idx) => {
+    const item = document.createElement('div');
+    item.className = 'signal-item';
+    item.dataset.id = sig.id;
+    item.innerHTML = `
+      <span class="drag-handle" title="ドラッグで並び替え">⠿</span>
+      <span class="sig-name" title="クリックで名前を編集">${sig.name}</span>
+      <span class="sig-type-badge ${sig.type === 'multi' ? 'multi' : ''}">${sig.type === 'binary' ? '2値' : '多値'}</span>
+      <span class="del-btn" title="削除">×</span>
+    `;
+    item.querySelector('.sig-name').addEventListener('click', () => openEditSignalModal(sig.id));
+    item.querySelector('.del-btn').addEventListener('click', () => { removeSignal(sig.id); refreshAll(); });
+    list.appendChild(item);
+  });
+}
+
+// ── モーダル制御（信号追加）──
+let _modalMode = 'add-binary'; // 'add-binary' | 'add-multi' | 'edit'
+let _editSigId = null;
+
+function openAddSignalModal(type) {
+  _modalMode = type === 'binary' ? 'add-binary' : 'add-multi';
+  _editSigId = null;
+  document.getElementById('modal-signal-title').textContent = type === 'binary' ? 'バイナリ信号を追加' : '多値信号を追加';
+  document.getElementById('modal-sig-name').value = '';
+  document.getElementById('modal-on-label').value  = 'ON';
+  document.getElementById('modal-off-label').value = 'OFF';
+  document.getElementById('modal-binary-opts').style.display = type === 'binary' ? '' : 'none';
+  document.getElementById('modal-multi-opts').style.display  = type === 'multi'  ? '' : 'none';
+  if (type === 'multi') buildLevelRows(['10b', '01b', '00b']);
+  document.getElementById('modal-signal').classList.add('open');
+  document.getElementById('modal-sig-name').focus();
+}
+
+function openEditSignalModal(sigId) {
+  const sig = state.signals.find(s => s.id === sigId);
+  if (!sig) return;
+  _modalMode = 'edit';
+  _editSigId = sigId;
+  document.getElementById('modal-signal-title').textContent = '信号を編集';
+  document.getElementById('modal-sig-name').value = sig.name;
+  document.getElementById('modal-binary-opts').style.display = sig.type === 'binary' ? '' : 'none';
+  document.getElementById('modal-multi-opts').style.display  = sig.type === 'multi'  ? '' : 'none';
+  if (sig.type === 'binary') {
+    document.getElementById('modal-on-label').value  = sig.levels[0];
+    document.getElementById('modal-off-label').value = sig.levels[1];
+  } else {
+    buildLevelRows(sig.levels);
+  }
+  document.getElementById('modal-signal').classList.add('open');
+  document.getElementById('modal-sig-name').focus();
+}
+
+function buildLevelRows(levels) {
+  const container = document.getElementById('modal-levels-container');
+  container.innerHTML = '';
+  levels.forEach(lv => addLevelRow(lv));
+}
+
+function addLevelRow(value = '') {
+  const container = document.getElementById('modal-levels-container');
+  const row = document.createElement('div');
+  row.className = 'level-row';
+  row.innerHTML = `<input type="text" value="${value}" placeholder="レベル名"><button class="rm-lv">－</button>`;
+  row.querySelector('.rm-lv').addEventListener('click', () => row.remove());
+  container.appendChild(row);
+}
+
+document.getElementById('btn-add-level').addEventListener('click', () => addLevelRow());
+document.getElementById('modal-signal-cancel').addEventListener('click', () => {
+  document.getElementById('modal-signal').classList.remove('open');
+});
+document.getElementById('modal-signal-ok').addEventListener('click', () => {
+  const name = document.getElementById('modal-sig-name').value.trim() || '信号';
+  if (_modalMode === 'edit' && _editSigId !== null) {
+    const sig = state.signals.find(s => s.id === _editSigId);
+    if (sig) { saveHistory(); sig.name = name; }
+  } else if (_modalMode === 'add-binary') {
+    const on  = document.getElementById('modal-on-label').value.trim()  || 'ON';
+    const off = document.getElementById('modal-off-label').value.trim() || 'OFF';
+    addSignal(createSignal(name, 'binary', [on, off]));
+  } else {
+    const rows   = document.querySelectorAll('#modal-levels-container .level-row input');
+    const levels = [...rows].map(r => r.value.trim() || '?');
+    if (levels.length < 2) { alert('レベルは2つ以上必要です'); return; }
+    addSignal(createSignal(name, 'multi', levels));
+  }
+  document.getElementById('modal-signal').classList.remove('open');
+  refreshAll();
+});
+
+document.getElementById('btn-add-binary').addEventListener('click', () => openAddSignalModal('binary'));
+document.getElementById('btn-add-multi').addEventListener('click',  () => openAddSignalModal('multi'));
+
+// Undo ボタン
+document.getElementById('btn-undo').addEventListener('click', undo);
+
+// ── 起動 ──
+loadSampleData();
+refreshAll();
+setStatus('Step 2 完了: データモデル・CRUD・Undo実装済み | 信号数: ' + state.signals.length);
 </script>
 
 </body>
