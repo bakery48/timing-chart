@@ -831,9 +831,6 @@ function refreshAll() {
   drawChart();
 }
 
-// ── 起動 ──
-loadSampleData();
-refreshAll();
 // ════════════════════════════════════════════════
 //  Step 4: 波形描画
 // ════════════════════════════════════════════════
@@ -2371,6 +2368,7 @@ scrollStyle.textContent = `
 document.head.appendChild(scrollStyle);
 
 // ── 起動完了 ──
+loadSampleData();
 showHelp();
 refreshAll();
 </script>
