@@ -1771,7 +1771,226 @@ canvas.addEventListener('mousemove', e => {
   if (hitTestAnnot(x, y)) canvas.style.cursor = 'pointer';
 }, false);
 
-setStatus('Step 7 完了: 矢印注釈の追加・編集・削除・プレビュー実装済み');
+// ════════════════════════════════════════════════
+//  Step 8: 信号管理UI – 並び替え・色変更・強化サイドバー
+// ════════════════════════════════════════════════
+
+// ── サイドバー描画（本実装・Step2を上書き）──
+function renderSidebar() {
+  const list = document.getElementById('signal-list');
+  list.innerHTML = '';
+
+  state.signals.forEach((sig, idx) => {
+    const item = document.createElement('div');
+    item.className = 'signal-item';
+    item.draggable = true;
+    item.dataset.id  = sig.id;
+    item.dataset.idx = idx;
+
+    item.innerHTML = `
+      <span class="drag-handle" title="ドラッグで並び替え">⠿</span>
+      <span class="sig-color-dot" title="色を変更" style="
+        display:inline-block;width:10px;height:10px;border-radius:50%;
+        background:${sig.color};flex-shrink:0;cursor:pointer;border:1px solid #ccc;
+      "></span>
+      <span class="sig-name" title="クリックで名前を編集">${escHtml(sig.name)}</span>
+      <span class="sig-type-badge ${sig.type==='multi'?'multi':''}">${sig.type==='binary'?'2値':'多値'}</span>
+      <span class="del-btn" title="削除">×</span>
+    `;
+
+    // 信号名クリック → 編集モーダル
+    item.querySelector('.sig-name').addEventListener('click', () => openEditSignalModal(sig.id));
+
+    // 色ドットクリック → カラーピッカー
+    item.querySelector('.sig-color-dot').addEventListener('click', e => {
+      e.stopPropagation();
+      openColorPicker(sig.id, e.target);
+    });
+
+    // 削除ボタン
+    item.querySelector('.del-btn').addEventListener('click', e => {
+      e.stopPropagation();
+      if (state.signals.length <= 1) { setStatus('信号は最低1つ必要です'); return; }
+      removeSignal(sig.id);
+      refreshAll();
+    });
+
+    // ── ドラッグ&ドロップ ──
+    item.addEventListener('dragstart', onDragStart);
+    item.addEventListener('dragover',  onDragOver);
+    item.addEventListener('dragleave', onDragLeave);
+    item.addEventListener('drop',      onDrop);
+    item.addEventListener('dragend',   onDragEnd);
+
+    list.appendChild(item);
+  });
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── ドラッグ状態 ──
+let _dragSrcIdx = null;
+
+function onDragStart(e) {
+  _dragSrcIdx = parseInt(this.dataset.idx);
+  this.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', _dragSrcIdx);
+}
+
+function onDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  // ドロップ先をハイライト
+  document.querySelectorAll('.signal-item').forEach(el => el.classList.remove('drop-target'));
+  this.classList.add('drop-target');
+}
+
+function onDragLeave() {
+  this.classList.remove('drop-target');
+}
+
+function onDrop(e) {
+  e.preventDefault();
+  const destIdx = parseInt(this.dataset.idx);
+  if (_dragSrcIdx === null || _dragSrcIdx === destIdx) return;
+
+  saveHistory();
+  // 配列の要素を入れ替え
+  const moved = state.signals.splice(_dragSrcIdx, 1)[0];
+  state.signals.splice(destIdx, 0, moved);
+
+  refreshAll();
+  setStatus(`「${moved.name}」を移動しました`);
+}
+
+function onDragEnd() {
+  _dragSrcIdx = null;
+  document.querySelectorAll('.signal-item').forEach(el => {
+    el.classList.remove('dragging', 'drop-target');
+  });
+}
+
+// ドラッグ中のスタイル
+const dragStyle = document.createElement('style');
+dragStyle.textContent = `
+  .signal-item.dragging    { opacity: 0.4; }
+  .signal-item.drop-target { background: #dbeafe !important; border-top: 2px solid #3b82f6; }
+`;
+document.head.appendChild(dragStyle);
+
+// ── カラーピッカー（ポップオーバー）──
+let _colorPickerEl = null;
+
+function openColorPicker(sigId, anchor) {
+  closeColorPicker();
+  const sig = state.signals.find(s => s.id === sigId);
+  if (!sig) return;
+
+  const pop = document.createElement('div');
+  pop.style.cssText = `
+    position:fixed; z-index:200;
+    background:#fff; border:1px solid #ccd; border-radius:6px;
+    padding:8px; box-shadow:0 4px 16px rgba(0,0,0,0.15);
+    display:flex; flex-wrap:wrap; gap:5px; width:148px;
+  `;
+
+  const allColors = [
+    '#2563eb','#16a34a','#dc2626','#9333ea',
+    '#0891b2','#d97706','#db2777','#65a30d',
+    '#1e40af','#166534','#991b1b','#6b21a8',
+    '#164e63','#92400e','#9d174d','#3f6212',
+    '#374151','#111827','#7c3aed','#0f766e',
+  ];
+
+  allColors.forEach(c => {
+    const dot = document.createElement('div');
+    dot.style.cssText = `
+      width:20px;height:20px;border-radius:50%;background:${c};
+      cursor:pointer;border:2px solid ${sig.color===c?'#1e2a3a':'transparent'};
+      box-sizing:border-box;transition:transform 0.1s;
+    `;
+    dot.title = c;
+    dot.addEventListener('click', () => {
+      saveHistory();
+      sig.color = c;
+      closeColorPicker();
+      refreshAll();
+    });
+    dot.addEventListener('mouseenter', () => { dot.style.transform = 'scale(1.2)'; });
+    dot.addEventListener('mouseleave', () => { dot.style.transform = ''; });
+    pop.appendChild(dot);
+  });
+
+  // アンカー位置に表示
+  const rect = anchor.getBoundingClientRect();
+  pop.style.left = rect.right + 4 + 'px';
+  pop.style.top  = rect.top   + 'px';
+
+  document.body.appendChild(pop);
+  _colorPickerEl = pop;
+
+  // 外側クリックで閉じる
+  setTimeout(() => {
+    document.addEventListener('click', closeColorPicker, { once: true });
+  }, 10);
+}
+
+function closeColorPicker() {
+  if (_colorPickerEl) { _colorPickerEl.remove(); _colorPickerEl = null; }
+}
+
+// ── 信号追加ボタン（Step2のイベントを再バインド）──
+// Step2 では直接 addEventListener していたので、ここでは追加不要
+// （既存のイベントリスナーが動作している）
+
+// ── 全信号削除ボタンをツールバーに追加 ──
+// （既存ツールバーの「JSON読込」の後）
+const tbClearBtn = document.createElement('button');
+tbClearBtn.className = 'tb-btn danger';
+tbClearBtn.textContent = '全消去';
+tbClearBtn.title = '全信号・注釈を削除';
+tbClearBtn.addEventListener('click', () => {
+  if (!confirm('すべての信号とアノテーションを削除しますか？')) return;
+  saveHistory();
+  state.signals = [];
+  state.events  = [];
+  state.annots  = [];
+  _colorIdx = 0;
+  refreshAll();
+  setStatus('全消去しました');
+});
+document.getElementById('btn-load-json').insertAdjacentElement('afterend', tbClearBtn);
+
+// ── 時間軸の長さ変更（ツールバーに追加）──
+const totalTimeInput = document.createElement('input');
+totalTimeInput.type  = 'number';
+totalTimeInput.min   = '1';
+totalTimeInput.max   = '300';
+totalTimeInput.step  = '1';
+totalTimeInput.value = state.totalTime;
+totalTimeInput.title = '表示時間 (秒)';
+totalTimeInput.style.cssText = 'width:52px;padding:3px 5px;border:1px solid #556;border-radius:4px;background:#2e3f55;color:#dde;font-size:12px;';
+totalTimeInput.addEventListener('change', () => {
+  const v = parseFloat(totalTimeInput.value);
+  if (v > 0) { state.totalTime = v; refreshAll(); }
+});
+
+const tbTimeLabel = document.createElement('span');
+tbTimeLabel.className = 'tb-label';
+tbTimeLabel.textContent = '総時間(s):';
+
+const tbSep2 = document.createElement('div');
+tbSep2.className = 'tb-sep';
+
+const toolbar = document.getElementById('toolbar');
+toolbar.appendChild(tbSep2);
+toolbar.appendChild(tbTimeLabel);
+toolbar.appendChild(totalTimeInput);
+
+setStatus('Step 8 完了: ドラッグ並び替え・色変更・全消去・総時間変更実装済み');
 </script>
 
 </body>
