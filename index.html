@@ -1221,7 +1221,296 @@ canvas.addEventListener('mousemove', e => {
   }
 });
 
-setStatus('Step 5 完了: ラベル列クリックで信号名・レベル名をインライン編集可能');
+// ════════════════════════════════════════════════
+//  Step 6: 遷移点の追加・移動・削除
+// ════════════════════════════════════════════════
+
+// ── 波形エリアのヒットテスト ──
+const EDGE_HIT_PX = 8; // 遷移点の当たり判定幅(px)
+
+// 指定座標に最も近い遷移点イベントを返す（time=0 は除く）
+function hitTestEdge(x, y) {
+  for (let i = 0; i < state.signals.length; i++) {
+    const sig  = state.signals[i];
+    const rowY = rowToY(i);
+    if (y < rowY || y >= rowY + ROW_HEIGHT) continue;
+
+    const evs = getSortedEvents(sig.id).filter(e => e.time > 0);
+    for (const ev of evs) {
+      const ex = timeToX(ev.time);
+      if (Math.abs(x - ex) <= EDGE_HIT_PX) {
+        return { ev, sig, rowIdx: i };
+      }
+    }
+  }
+  return null;
+}
+
+// 指定座標がどの信号行・どのレベルに当たるか返す
+function hitTestWaveArea(x, y) {
+  for (let i = 0; i < state.signals.length; i++) {
+    const sig  = state.signals[i];
+    const rowY = rowToY(i);
+    if (y < rowY || y >= rowY + ROW_HEIGHT) continue;
+
+    const t = xToTime(x);
+    if (t < 0) return null;
+
+    const n   = sig.levels.length;
+    // クリックY座標から最も近いレベルインデックスを選ぶ
+    let best = 0, bestDist = Infinity;
+    for (let vi = 0; vi < n; vi++) {
+      const vy = valueToY(i, vi, n);
+      const d  = Math.abs(y - vy);
+      if (d < bestDist) { bestDist = d; best = vi; }
+    }
+    return { sig, rowIdx: i, t, valueIdx: best };
+  }
+  return null;
+}
+
+// ── ドラッグ状態 ──
+const drag = {
+  active:  false,
+  ev:      null,   // 移動中の Event オブジェクト
+  sig:     null,
+  origTime: 0,
+  snapped: false,
+};
+
+// ── 遷移点の描画（ハイライト）──
+// drawChart() 内で呼ぶために drawWaveforms の後に差し込む
+function drawEdgeHandles() {
+  state.signals.forEach((sig, i) => {
+    const evs = getSortedEvents(sig.id).filter(e => e.time > 0);
+    evs.forEach(ev => {
+      const x  = timeToX(ev.time);
+      const y0 = rowToY(i) + ROW_PAD / 2;
+      const y1 = rowToY(i) + ROW_HEIGHT - ROW_PAD / 2;
+
+      // ドラッグ中のものはオレンジ、それ以外は半透明
+      const isDragging = drag.active && drag.ev && drag.ev.id === ev.id;
+      ctx.strokeStyle = isDragging ? '#f97316' : sig.color;
+      ctx.globalAlpha = isDragging ? 1.0 : 0.0; // 普段は非表示（hover で表示）
+      ctx.lineWidth   = isDragging ? 2 : 1;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(x, y0);
+      ctx.lineTo(x, y1);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    });
+  });
+}
+
+// hover 中の遷移点を追跡してカーソル変更 + ハンドル表示
+let _hoveredEdge = null;
+
+canvas.addEventListener('mousemove', e => {
+  // Step5 のハンドラと共存（再登録ではなく上書き）
+  const rect   = canvas.getBoundingClientRect();
+  const scroll = document.getElementById('canvas-scroll');
+  const x = e.clientX - rect.left + scroll.scrollLeft;
+  const y = e.clientY - rect.top  + scroll.scrollTop;
+
+  if (drag.active) {
+    handleDragMove(x, y);
+    return;
+  }
+
+  if (x < LABEL_WIDTH) {
+    const hit = hitTestLabel(x, y);
+    canvas.style.cursor = hit ? 'text' : 'default';
+    return;
+  }
+
+  if (state.tool === 'select' || state.tool === 'edge') {
+    const hit = hitTestEdge(x, y);
+    if (hit) {
+      canvas.style.cursor = 'ew-resize';
+      _hoveredEdge = hit;
+      // ハンドルをハイライト描画
+      drawChart();
+      const ex  = timeToX(hit.ev.time);
+      const y0  = rowToY(hit.rowIdx) + ROW_PAD / 2;
+      const y1  = rowToY(hit.rowIdx) + ROW_HEIGHT - ROW_PAD / 2;
+      ctx.strokeStyle = hit.sig.color;
+      ctx.globalAlpha = 0.7;
+      ctx.lineWidth   = 2;
+      ctx.setLineDash([3, 2]);
+      ctx.beginPath();
+      ctx.moveTo(ex, y0);
+      ctx.lineTo(ex, y1);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+      return;
+    } else {
+      _hoveredEdge = null;
+    }
+  }
+
+  canvas.style.cursor = state.tool === 'annot' ? 'crosshair' :
+                        state.tool === 'edge'   ? 'crosshair' : 'default';
+  drawChart();
+}, true); // capture で Step5 のハンドラを上書き
+
+// ── マウスダウン：ドラッグ開始 or 追加 ──
+canvas.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  const rect   = canvas.getBoundingClientRect();
+  const scroll = document.getElementById('canvas-scroll');
+  const x = e.clientX - rect.left + scroll.scrollLeft;
+  const y = e.clientY - rect.top  + scroll.scrollTop;
+
+  if (x < LABEL_WIDTH) return; // ラベル列は Step5 が担当
+
+  // 既存の遷移点をドラッグ
+  const edgeHit = hitTestEdge(x, y);
+  if (edgeHit && (state.tool === 'select' || state.tool === 'edge')) {
+    drag.active   = true;
+    drag.ev       = edgeHit.ev;
+    drag.sig      = edgeHit.sig;
+    drag.origTime = edgeHit.ev.time;
+    saveHistory();
+    e.preventDefault();
+    return;
+  }
+});
+
+// ── ドラッグ移動 ──
+function handleDragMove(x, y) {
+  if (!drag.active || !drag.ev) return;
+  let t = snapTime(xToTime(x));
+  t = Math.max(0.05, Math.min(state.totalTime, t));
+
+  // time=0 のイベントとの重複を避ける
+  if (t <= 0) t = 0.05;
+
+  drag.ev.time = t;
+  drawChart();
+
+  // ドラッグ中のライン強調
+  const ex = timeToX(t);
+  const i  = state.signals.indexOf(drag.sig);
+  const y0 = rowToY(i) + ROW_PAD / 2;
+  const y1 = rowToY(i) + ROW_HEIGHT - ROW_PAD / 2;
+  ctx.strokeStyle = '#f97316';
+  ctx.lineWidth   = 2;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  ctx.moveTo(ex, y0); ctx.lineTo(ex, y1);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  setStatus(`移動中: ${drag.sig.name}  t = ${t.toFixed(3)}s`);
+}
+
+// ── マウスアップ：ドラッグ確定 or クリック ──
+canvas.addEventListener('mouseup', e => {
+  if (e.button !== 0) return;
+  const rect   = canvas.getBoundingClientRect();
+  const scroll = document.getElementById('canvas-scroll');
+  const x = e.clientX - rect.left + scroll.scrollLeft;
+  const y = e.clientY - rect.top  + scroll.scrollTop;
+
+  if (drag.active) {
+    drag.active = false;
+    drag.ev     = null;
+    refreshAll();
+    setStatus('遷移点を移動しました');
+    return;
+  }
+});
+
+// Step5 の onCanvasClick に波形エリア処理を追加
+// 既存の addEventListener('click') を拡張する（既登録のものと共存）
+canvas.addEventListener('click', e => {
+  if (e.button !== 0) return;
+  const rect   = canvas.getBoundingClientRect();
+  const scroll = document.getElementById('canvas-scroll');
+  const x = e.clientX - rect.left + scroll.scrollLeft;
+  const y = e.clientY - rect.top  + scroll.scrollTop;
+
+  if (x < LABEL_WIDTH) return; // ラベル列は既存ハンドラが処理
+
+  if (state.tool === 'edge') {
+    // 既存の遷移点に近い場合は無視（ドラッグ用）
+    if (hitTestEdge(x, y)) return;
+
+    const hit = hitTestWaveArea(x, y);
+    if (!hit) return;
+
+    const t = snapTime(hit.t);
+    // その時刻の直前の値を取得して「次の値」に遷移
+    const curVal = getValueAt(hit.sig.id, t - 0.001);
+    const n      = hit.sig.levels.length;
+    // バイナリは反転、多値はクリックY位置から一番近いレベルへ
+    const newVal = n === 2 ? (curVal === 0 ? 1 : 0) : hit.valueIdx;
+
+    addEvent(hit.sig.id, t, newVal);
+    refreshAll();
+    setStatus(`遷移追加: ${hit.sig.name}  t=${t.toFixed(3)}s → ${hit.sig.levels[newVal]}`);
+    return;
+  }
+
+  if (state.tool === 'select') {
+    setStatus('ヒント: 遷移点をドラッグで移動 | 右クリックで削除 | ツール→「遷移追加」でクリック追加');
+  }
+});
+
+// ── 右クリックで遷移点を削除 ──
+canvas.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  const rect   = canvas.getBoundingClientRect();
+  const scroll = document.getElementById('canvas-scroll');
+  const x = e.clientX - rect.left + scroll.scrollLeft;
+  const y = e.clientY - rect.top  + scroll.scrollTop;
+
+  if (x < LABEL_WIDTH) return;
+
+  const hit = hitTestEdge(x, y);
+  if (hit) {
+    removeEvent(hit.ev.id);
+    refreshAll();
+    setStatus(`遷移点を削除しました: ${hit.sig.name}  t=${hit.ev.time.toFixed(3)}s`);
+  }
+});
+
+// ── スナップ（グリッドに吸着）──
+function snapTime(t) {
+  if (!state.showGrid) return t;
+  const rawStep = 50 / state.scale;
+  const niceSteps = [0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10];
+  const step = niceSteps.find(s => s >= rawStep) || 10;
+  const snapped = Math.round(t / step) * step;
+  // グリッドに近い（1/4 step 以内）場合のみ吸着
+  return Math.abs(t - snapped) < step * 0.25 ? snapped : t;
+}
+
+// ── ツールボタンの切り替え ──
+const toolBtns = {
+  select: document.getElementById('btn-tool-select'),
+  edge:   document.getElementById('btn-tool-edge'),
+  annot:  document.getElementById('btn-tool-annot'),
+};
+function setTool(name) {
+  state.tool = name;
+  Object.entries(toolBtns).forEach(([k, btn]) => {
+    btn.classList.toggle('primary', k === name);
+  });
+  const hints = {
+    select: '選択モード: 遷移点をドラッグで移動 | 右クリックで削除',
+    edge:   '遷移追加モード: 波形エリアをクリックで遷移追加 | ドラッグで移動 | 右クリックで削除',
+    annot:  '矢印注釈モード: 開始時刻→終了時刻の順にクリック (Step 7 で実装)',
+  };
+  setStatus(hints[name] || '');
+}
+toolBtns.select.addEventListener('click', () => setTool('select'));
+toolBtns.edge.addEventListener('click',   () => setTool('edge'));
+toolBtns.annot.addEventListener('click',  () => setTool('annot'));
+
+setStatus('Step 6 完了: 遷移点の追加(クリック)・移動(ドラッグ)・削除(右クリック)実装済み');
 </script>
 
 </body>
