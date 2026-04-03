@@ -541,14 +541,7 @@ function loadSampleData() {
   addAnnot(3.5, 6.5, '3s');
 }
 
-// ── refreshAll: 描画＋サイドバー更新（後の Step で本実装）──
-function refreshAll() {
-  renderSidebar();
-  resizeCanvas();
-  // drawChart() は Step 3 以降で追加
-}
-
-// ── サイドバー仮描画 ──
+// ── サイドバー仮描画（Step 8 で本実装）──
 function renderSidebar() {
   const list = document.getElementById('signal-list');
   list.innerHTML = '';
@@ -831,8 +824,7 @@ function drawAnnotationArea() {
   ctx.fillText('注釈', 8, y + ANNOT_AREA_H / 2);
 }
 
-// refreshAll に drawChart を組み込む
-const _origRefreshAll = refreshAll;
+// ── refreshAll: サイドバー更新 + Canvas再描画 ──
 function refreshAll() {
   renderSidebar();
   resizeCanvas();
@@ -2232,7 +2224,155 @@ document.getElementById('file-input').addEventListener('change', e => {
   e.target.value = ''; // 同じファイルを再度選択できるようリセット
 });
 
-setStatus('Step 9 完了: PNG・SVG・JSON の保存と読込が使えます');
+// ════════════════════════════════════════════════
+//  Step 10: UIポリッシュ
+// ════════════════════════════════════════════════
+
+// ── ズームイン/アウト ──
+const SCALE_MIN = 20, SCALE_MAX = 400;
+
+function zoom(factor) {
+  const scroll = document.getElementById('canvas-scroll');
+  // スクロール中央の時刻を保持
+  const centerX = scroll.scrollLeft + scroll.clientWidth / 2;
+  const centerT = xToTime(centerX);
+
+  state.scale = Math.min(SCALE_MAX, Math.max(SCALE_MIN, Math.round(state.scale * factor)));
+  refreshAll();
+
+  // 同じ時刻が画面中央に来るようスクロール位置を補正
+  const newCX = timeToX(centerT);
+  scroll.scrollLeft = newCX - scroll.clientWidth / 2;
+  setStatus(`ズーム: ${state.scale}px/s`);
+}
+
+document.getElementById('btn-zoom-in') .addEventListener('click', () => zoom(1.5));
+document.getElementById('btn-zoom-out').addEventListener('click', () => zoom(1 / 1.5));
+
+// マウスホイールでズーム（Ctrl+ホイール）
+document.getElementById('canvas-scroll').addEventListener('wheel', e => {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  zoom(e.deltaY < 0 ? 1.2 : 1 / 1.2);
+}, { passive: false });
+
+// ── グリッド切り替え ──
+const gridBtn = document.getElementById('btn-grid-toggle');
+function updateGridBtn() {
+  gridBtn.classList.toggle('primary', state.showGrid);
+  gridBtn.textContent = state.showGrid ? 'グリッド ON' : 'グリッド OFF';
+}
+gridBtn.addEventListener('click', () => {
+  state.showGrid = !state.showGrid;
+  updateGridBtn();
+  refreshAll();
+});
+updateGridBtn();
+
+// ── ウィンドウリサイズへの対応 ──
+let _resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(_resizeTimer);
+  _resizeTimer = setTimeout(refreshAll, 80);
+});
+
+// ── キーボードショートカット ──
+document.addEventListener('keydown', e => {
+  // モーダル・インライン入力中は無効
+  if (document.activeElement.tagName === 'INPUT' ||
+      document.activeElement.tagName === 'TEXTAREA') return;
+  if (document.querySelector('.modal-overlay.open')) return;
+
+  const key = (e.ctrlKey ? 'Ctrl+' : '') + (e.shiftKey ? 'Shift+' : '') + e.key;
+
+  switch (key) {
+    case 'Ctrl+z': case 'Ctrl+Z':
+      e.preventDefault(); undo(); break;
+
+    case 'Ctrl++': case 'Ctrl+=':
+      e.preventDefault(); zoom(1.5); break;
+    case 'Ctrl+-':
+      e.preventDefault(); zoom(1 / 1.5); break;
+    case 'Ctrl+0':
+      e.preventDefault(); state.scale = 80; refreshAll(); break;
+
+    case 'Ctrl+s':
+      e.preventDefault();
+      document.getElementById('btn-save-json').click(); break;
+    case 'Ctrl+Shift+S':
+      e.preventDefault();
+      document.getElementById('btn-export-png').click(); break;
+
+    case 'g': case 'G':
+      state.showGrid = !state.showGrid; updateGridBtn(); refreshAll(); break;
+
+    case '1': setTool('select'); break;
+    case '2': setTool('edge');   break;
+    case '3': setTool('annot');  break;
+
+    case 'Escape':
+      setTool('select'); break;
+  }
+});
+
+// ── ツールチップ（ショートカット表示）──
+[
+  ['btn-tool-select', '選択 [1]'],
+  ['btn-tool-edge',   '遷移追加 [2]'],
+  ['btn-tool-annot',  '矢印注釈 [3]'],
+  ['btn-zoom-in',     'ズームイン [Ctrl++]'],
+  ['btn-zoom-out',    'ズームアウト [Ctrl+-]'],
+  ['btn-grid-toggle', 'グリッド切替 [G]'],
+  ['btn-undo',        '元に戻す [Ctrl+Z]'],
+  ['btn-export-png',  'PNG保存 [Ctrl+Shift+S]'],
+  ['btn-save-json',   'JSON保存 [Ctrl+S]'],
+].forEach(([id, tip]) => {
+  const el = document.getElementById(id);
+  if (el) el.title = tip;
+});
+
+// ── ショートカット一覧をステータスバーに表示する help 関数 ──
+function showHelp() {
+  setStatus('ショートカット: [1]選択 [2]遷移追加 [3]矢印注釈 [G]グリッド [Ctrl+Z]Undo [Ctrl+S]JSON保存 [Ctrl+Shift+S]PNG保存 [Ctrl+±]ズーム | 右クリック:削除');
+}
+
+// ── ツールバーに「?」ヘルプボタンを追加 ──
+const helpBtn = document.createElement('button');
+helpBtn.className = 'tb-btn';
+helpBtn.textContent = '?';
+helpBtn.title = 'ショートカット一覧';
+helpBtn.style.marginLeft = 'auto';
+helpBtn.addEventListener('click', showHelp);
+document.getElementById('toolbar').appendChild(helpBtn);
+
+// ── Canvas 上のタイムスタンプ表示（mousemove）──
+document.getElementById('canvas-scroll').addEventListener('mousemove', e => {
+  const rect   = canvas.getBoundingClientRect();
+  const scroll = document.getElementById('canvas-scroll');
+  const x = e.clientX - rect.left + scroll.scrollLeft;
+  const t = xToTime(x);
+  if (t >= 0 && t <= state.totalTime && x >= LABEL_WIDTH) {
+    const tStr = t < 1 ? (t * 1000).toFixed(1) + ' ms' : t.toFixed(3) + ' s';
+    // ステータスバーの右端に時刻を表示
+    const base = statusEl.dataset.base || statusEl.textContent;
+    statusEl.dataset.base = base.split(' | t=')[0];
+    statusEl.textContent  = statusEl.dataset.base + ` | t=${tStr}`;
+  }
+});
+
+// ── スクロールバーのスタイリング ──
+const scrollStyle = document.createElement('style');
+scrollStyle.textContent = `
+  #canvas-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+  #canvas-scroll::-webkit-scrollbar-track { background: #e8eaf0; }
+  #canvas-scroll::-webkit-scrollbar-thumb { background: #b0b8cc; border-radius: 4px; }
+  #canvas-scroll::-webkit-scrollbar-thumb:hover { background: #8890aa; }
+`;
+document.head.appendChild(scrollStyle);
+
+// ── 起動完了 ──
+showHelp();
+refreshAll();
 </script>
 
 </body>
