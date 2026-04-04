@@ -352,7 +352,9 @@ const state = {
   annots:  [],      // Annotation[]
   tool: 'select',   // 'select' | 'edge' | 'annot'
   scale: 80,        // px per second
-  totalTime: 10,    // 表示する合計秒数
+  totalTime: 10,    // 表示する合計秒数（内部は常に秒）
+  unitLabel: 'ms',  // 表示単位ラベル ('μs'|'ms'|'s'|'min')
+  unitFactor: 1e-3, // 1 表示単位 = unitFactor 秒
   showGrid: true,
   history: [],      // Undo 用スナップショット
   annotStep: null,  // アノテーション追加中の第1点
@@ -526,19 +528,24 @@ function loadSampleData() {
   addSignal(sigB);
   addSignal(sigOut);
 
-  // 信号A: t=2 で OFF→ON
-  addEvent(sigA.id, 2, 0);  // ON (index 0)
+  // 信号A: t=20ms で OFF→ON
+  addEvent(sigA.id, 0.020, 0);  // ON
 
-  // 信号B: t=3.5 で OFF→ON
-  addEvent(sigB.id, 3.5, 0); // ON (index 0)
+  // 信号B: t=35ms で OFF→ON
+  addEvent(sigB.id, 0.035, 0);  // ON
 
-  // 出力: 00b→01b (t=2), 01b→10b (t=3.5), 10b→00b (t=6.5)
-  addEvent(sigOut.id, 2,   1); // 01b
-  addEvent(sigOut.id, 3.5, 0); // 10b
-  addEvent(sigOut.id, 6.5, 2); // 00b
+  // 出力: 00b→01b (20ms), 01b→10b (35ms), 10b→00b (65ms)
+  addEvent(sigOut.id, 0.020, 1); // 01b
+  addEvent(sigOut.id, 0.035, 0); // 10b
+  addEvent(sigOut.id, 0.065, 2); // 00b
 
-  // アノテーション: 3.5s ～ 6.5s = "3s"
-  addAnnot(3.5, 6.5, '3s');
+  // アノテーション: 35ms ～ 65ms = "30ms"
+  addAnnot(0.035, 0.065, '30ms');
+
+  // サンプルは ms 単位で表示
+  state.totalTime  = 0.100; // 100ms
+  state.unitLabel  = 'ms';
+  state.unitFactor = 1e-3;
 }
 
 // ── サイドバー仮描画（Step 8 で本実装）──
@@ -663,6 +670,14 @@ function valueToY(rowIdx, valueIdx, totalLevels) {
   return top + (valueIdx / (totalLevels - 1)) * WAVE_H;
 }
 
+// ── 時刻フォーマット（内部秒 → 表示単位文字列）──
+function formatTime(seconds) {
+  const v = seconds / state.unitFactor;
+  // 小数点以下が不要なら整数表示、必要なら最小限の桁数
+  const s = Number.isInteger(v) || v >= 10 ? v.toFixed(0) : v.toPrecision(3).replace(/\.?0+$/, '');
+  return s + state.unitLabel;
+}
+
 // ── メイン描画関数 ──
 function drawChart() {
   resizeCanvas();
@@ -735,7 +750,7 @@ function drawTimeAxis() {
       ctx.lineTo(x, HEADER_H);
       ctx.stroke();
       // ラベル
-      const label = t < 1 ? (t * 1000).toFixed(0) + 'ms' : t.toFixed(tickStep < 1 ? 1 : 0) + 's';
+      const label = formatTime(t);
       ctx.fillText(label, x, HEADER_H / 2);
     }
     t = Math.round((t + tickStep) * 1000) / 1000;
@@ -1953,23 +1968,64 @@ tbClearBtn.addEventListener('click', () => {
 });
 document.getElementById('btn-load-json').insertAdjacentElement('afterend', tbClearBtn);
 
-// ── 時間軸の長さ変更（ツールバーに追加）──
+// ── 時間単位 + 総時間（ツールバーに追加）──
+const UNIT_OPTIONS = [
+  { label: 'μs', factor: 1e-6 },
+  { label: 'ms', factor: 1e-3 },
+  { label: 's',  factor: 1    },
+  { label: 'min',factor: 60   },
+];
+
+// 単位セレクタ
+const unitSelect = document.createElement('select');
+unitSelect.title = '時間の表示単位';
+unitSelect.style.cssText = 'padding:3px 5px;border:1px solid #556;border-radius:4px;background:#2e3f55;color:#dde;font-size:12px;cursor:pointer;';
+UNIT_OPTIONS.forEach(u => {
+  const opt = document.createElement('option');
+  opt.value = u.label;
+  opt.textContent = u.label;
+  if (u.label === state.unitLabel) opt.selected = true;
+  unitSelect.appendChild(opt);
+});
+
+// 総時間入力（表示単位で入力）
 const totalTimeInput = document.createElement('input');
 totalTimeInput.type  = 'number';
 totalTimeInput.min   = '1';
-totalTimeInput.max   = '300';
+totalTimeInput.max   = '999999';
 totalTimeInput.step  = '1';
-totalTimeInput.value = state.totalTime;
-totalTimeInput.title = '表示時間 (秒)';
-totalTimeInput.style.cssText = 'width:52px;padding:3px 5px;border:1px solid #556;border-radius:4px;background:#2e3f55;color:#dde;font-size:12px;';
+totalTimeInput.style.cssText = 'width:64px;padding:3px 5px;border:1px solid #556;border-radius:4px;background:#2e3f55;color:#dde;font-size:12px;';
+
+// 表示単位 → 内部秒 に変換して state に反映
+function syncTotalTimeInput() {
+  const u = UNIT_OPTIONS.find(u => u.label === state.unitLabel);
+  // 内部秒 → 表示単位
+  totalTimeInput.value = Math.round(state.totalTime / u.factor);
+  totalTimeInput.title = `表示時間 (${u.label})`;
+}
+syncTotalTimeInput();
+
 totalTimeInput.addEventListener('change', () => {
   const v = parseFloat(totalTimeInput.value);
-  if (v > 0) { state.totalTime = v; refreshAll(); }
+  if (v > 0) {
+    state.totalTime = v * state.unitFactor;
+    refreshAll();
+  }
+});
+
+unitSelect.addEventListener('change', () => {
+  const u = UNIT_OPTIONS.find(u => u.label === unitSelect.value);
+  if (!u) return;
+  state.unitLabel  = u.label;
+  state.unitFactor = u.factor;
+  syncTotalTimeInput();
+  refreshAll();
+  setStatus(`表示単位を ${u.label} に変更しました`);
 });
 
 const tbTimeLabel = document.createElement('span');
 tbTimeLabel.className = 'tb-label';
-tbTimeLabel.textContent = '総時間(s):';
+tbTimeLabel.textContent = '総時間:';
 
 const tbSep2 = document.createElement('div');
 tbSep2.className = 'tb-sep';
@@ -1978,6 +2034,7 @@ const toolbar = document.getElementById('toolbar');
 toolbar.appendChild(tbSep2);
 toolbar.appendChild(tbTimeLabel);
 toolbar.appendChild(totalTimeInput);
+toolbar.appendChild(unitSelect);
 
 // ════════════════════════════════════════════════
 //  Step 9: エクスポート機能
@@ -2040,7 +2097,7 @@ function buildSVG() {
     const x = timeToX(t);
     if (x <= LABEL_WIDTH || x >= W) continue;
     lines.push(`<line x1="${x}" y1="${HEADER_H - 5}" x2="${x}" y2="${HEADER_H}" stroke="#bbc" stroke-width="1"/>`);
-    const lbl = t < 1 ? (t * 1000).toFixed(0) + 'ms' : t.toFixed(tickStep < 1 ? 1 : 0) + 's';
+    const lbl = formatTime(t);
     lines.push(svgText(x, HEADER_H / 2, lbl, '#556', 10, 'middle', 'center'));
   }
 
@@ -2168,9 +2225,11 @@ function svgText(x, y, text, fill, size, dominantBaseline, textAnchor, fontWeigh
 document.getElementById('btn-save-json').addEventListener('click', () => {
   const data = {
     version: 1,
-    totalTime: state.totalTime,
-    scale: state.scale,
-    showGrid: state.showGrid,
+    totalTime:  state.totalTime,
+    scale:      state.scale,
+    showGrid:   state.showGrid,
+    unitLabel:  state.unitLabel,
+    unitFactor: state.unitFactor,
     signals: state.signals,
     events:  state.events,
     annots:  state.annots,
@@ -2202,9 +2261,16 @@ document.getElementById('file-input').addEventListener('change', e => {
       state.signals   = data.signals   || [];
       state.events    = data.events    || [];
       state.annots    = data.annots    || [];
-      state.totalTime = data.totalTime || 10;
-      state.scale     = data.scale     || 80;
-      state.showGrid  = data.showGrid  !== undefined ? data.showGrid : true;
+      state.totalTime  = data.totalTime  || 10;
+      state.scale      = data.scale      || 80;
+      state.showGrid   = data.showGrid   !== undefined ? data.showGrid : true;
+      if (data.unitLabel && data.unitFactor) {
+        state.unitLabel  = data.unitLabel;
+        state.unitFactor = data.unitFactor;
+        const opt = unitSelect.querySelector(`option[value="${data.unitLabel}"]`);
+        if (opt) opt.selected = true;
+      }
+      syncTotalTimeInput();
       // idカウンタを最大値より大きくリセット
       const allIds = [...state.signals, ...state.events, ...state.annots].map(o => o.id || 0);
       _nextId = (allIds.length ? Math.max(...allIds) : 0) + 1;
@@ -2349,7 +2415,7 @@ document.getElementById('canvas-scroll').addEventListener('mousemove', e => {
   const x = e.clientX - rect.left + scroll.scrollLeft;
   const t = xToTime(x);
   if (t >= 0 && t <= state.totalTime && x >= LABEL_WIDTH) {
-    const tStr = t < 1 ? (t * 1000).toFixed(1) + ' ms' : t.toFixed(3) + ' s';
+    const tStr = formatTime(t);
     // ステータスバーの右端に時刻を表示
     const base = statusEl.dataset.base || statusEl.textContent;
     statusEl.dataset.base = base.split(' | t=')[0];
