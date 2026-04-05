@@ -547,11 +547,11 @@ function loadSampleData() {
   // アノテーション: 35ms ～ 65ms = "30ms"
   addAnnot(0.035, 0.065, '30ms');
 
-  // サンプルは ms 単位で表示
-  state.totalTime  = 0.100; // 100ms
+  // 総時間・スケール（内部は秒）、軸ラベルのみ ms 表示
+  state.totalTime  = 0.100; // 0.1s = 100ms
   state.unitLabel  = 'ms';
   state.unitFactor = 1e-3;
-  fitToWindow(); // 画面幅に合わせてスケール設定
+  fitToWindow();
 }
 
 // ── サイドバー仮描画（Step 8 で本実装）──
@@ -1982,7 +1982,7 @@ tbClearBtn.addEventListener('click', () => {
 });
 document.getElementById('btn-load-json').insertAdjacentElement('afterend', tbClearBtn);
 
-// ── 時間単位 + 総時間（ツールバーに追加）──
+// ── 軸ラベルの表示単位 + 総時間（ツールバーに追加）──
 const UNIT_OPTIONS = [
   { label: 'μs', factor: 1e-6 },
   { label: 'ms', factor: 1e-3 },
@@ -1990,9 +1990,9 @@ const UNIT_OPTIONS = [
   { label: 'min',factor: 60   },
 ];
 
-// 単位セレクタ
+// 単位セレクタ（ラベル表示だけを変える）
 const unitSelect = document.createElement('select');
-unitSelect.title = '時間の表示単位';
+unitSelect.title = '軸ラベルの表示単位';
 unitSelect.style.cssText = 'padding:3px 5px;border:1px solid #556;border-radius:4px;background:#2e3f55;color:#dde;font-size:12px;cursor:pointer;';
 UNIT_OPTIONS.forEach(u => {
   const opt = document.createElement('option');
@@ -2001,54 +2001,46 @@ UNIT_OPTIONS.forEach(u => {
   if (u.label === state.unitLabel) opt.selected = true;
   unitSelect.appendChild(opt);
 });
-
-// 総時間入力（表示単位で入力）
-const totalTimeInput = document.createElement('input');
-totalTimeInput.type  = 'number';
-totalTimeInput.min   = '1';
-totalTimeInput.max   = '999999';
-totalTimeInput.step  = '1';
-totalTimeInput.style.cssText = 'width:64px;padding:3px 5px;border:1px solid #556;border-radius:4px;background:#2e3f55;color:#dde;font-size:12px;';
-
-// 表示単位 → 内部秒 に変換して state に反映
-function syncTotalTimeInput() {
-  const u = UNIT_OPTIONS.find(u => u.label === state.unitLabel);
-  // 内部秒 → 表示単位
-  totalTimeInput.value = Math.round(state.totalTime / u.factor);
-  totalTimeInput.title = `表示時間 (${u.label})`;
-}
-syncTotalTimeInput();
-
-totalTimeInput.addEventListener('change', () => {
-  const v = parseFloat(totalTimeInput.value);
-  if (v > 0) {
-    state.totalTime = v * state.unitFactor;
-    refreshAll();
-  }
-});
-
 unitSelect.addEventListener('change', () => {
   const u = UNIT_OPTIONS.find(u => u.label === unitSelect.value);
   if (!u) return;
   state.unitLabel  = u.label;
   state.unitFactor = u.factor;
-  syncTotalTimeInput();
   refreshAll();
-  setStatus(`表示単位を ${u.label} に変更しました`);
+  setStatus(`軸ラベル単位を ${u.label} に変更しました`);
 });
+
+// 総時間入力（内部は常に秒）
+const totalTimeInput = document.createElement('input');
+totalTimeInput.type  = 'number';
+totalTimeInput.min   = '0.001';
+totalTimeInput.max   = '999999';
+totalTimeInput.step  = 'any';
+totalTimeInput.value = state.totalTime;
+totalTimeInput.title = '表示する総時間（秒）';
+totalTimeInput.style.cssText = 'width:64px;padding:3px 5px;border:1px solid #556;border-radius:4px;background:#2e3f55;color:#dde;font-size:12px;';
+totalTimeInput.addEventListener('change', () => {
+  const v = parseFloat(totalTimeInput.value);
+  if (v > 0) { state.totalTime = v; refreshAll(); }
+});
+
+const tbUnitLabel = document.createElement('span');
+tbUnitLabel.className = 'tb-label';
+tbUnitLabel.textContent = '単位:';
 
 const tbTimeLabel = document.createElement('span');
 tbTimeLabel.className = 'tb-label';
-tbTimeLabel.textContent = '総時間:';
+tbTimeLabel.textContent = '総時間(s):';
 
 const tbSep2 = document.createElement('div');
 tbSep2.className = 'tb-sep';
 
 const toolbar = document.getElementById('toolbar');
 toolbar.appendChild(tbSep2);
+toolbar.appendChild(tbUnitLabel);
+toolbar.appendChild(unitSelect);
 toolbar.appendChild(tbTimeLabel);
 toolbar.appendChild(totalTimeInput);
-toolbar.appendChild(unitSelect);
 
 // ════════════════════════════════════════════════
 //  Step 9: エクスポート機能
@@ -2284,7 +2276,7 @@ document.getElementById('file-input').addEventListener('change', e => {
         const opt = unitSelect.querySelector(`option[value="${data.unitLabel}"]`);
         if (opt) opt.selected = true;
       }
-      syncTotalTimeInput();
+      totalTimeInput.value = state.totalTime;
       // idカウンタを最大値より大きくリセット
       const allIds = [...state.signals, ...state.events, ...state.annots].map(o => o.id || 0);
       _nextId = (allIds.length ? Math.max(...allIds) : 0) + 1;
@@ -2459,6 +2451,10 @@ document.head.appendChild(scrollStyle);
 
 // ── 起動完了 ──
 loadSampleData();
+// 起動後にUIに反映
+totalTimeInput.value = state.totalTime;
+const _initUnit = unitSelect.querySelector(`option[value="${state.unitLabel}"]`);
+if (_initUnit) _initUnit.selected = true;
 showHelp();
 refreshAll();
 </script>
