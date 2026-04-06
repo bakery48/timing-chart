@@ -350,6 +350,19 @@ const WAVE_H       = ROW_HEIGHT - ROW_PAD * 2; // 波形の振幅高さ
 const HEADER_H     = 24;  // 時間軸ヘッダ高さ
 const ANNOT_AREA_H = 50;  // アノテーション行の高さ
 
+// 目盛り間隔の候補（秒）: μs〜分 をカバー
+const NICE_STEPS = [
+  1e-7, 2e-7, 5e-7,          // 0.1〜0.5 μs
+  1e-6, 2e-6, 5e-6,          // 1〜5 μs
+  1e-5, 2e-5, 5e-5,          // 10〜50 μs
+  1e-4, 2e-4, 5e-4,          // 0.1〜0.5 ms
+  1e-3, 2e-3, 5e-3,          // 1〜5 ms
+  0.01, 0.02, 0.05,          // 10〜50 ms
+  0.1,  0.2,  0.5,           // 100〜500 ms
+  1,    2,    5,    10,      // 1〜10 s
+  30,   60,   120,  300,     // 30s〜5min
+];
+
 // ── アプリ状態 ──
 const state = {
   signals: [],      // Signal[]
@@ -736,8 +749,7 @@ function drawTimeAxis() {
 
   // 目盛り間隔を自動選択（画面上で最低 50px 間隔）
   const rawStep = 50 / state.scale;
-  const niceSteps = [0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10];
-  const tickStep = niceSteps.find(s => s >= rawStep) || 10;
+  const tickStep = NICE_STEPS.find(s => s >= rawStep) || 300;
 
   ctx.fillStyle = '#556';
   ctx.font = '10px Segoe UI, sans-serif';
@@ -771,8 +783,7 @@ function drawTimeAxis() {
 // ── グリッド線 ──
 function drawGrid() {
   const rawStep = 50 / state.scale;
-  const niceSteps = [0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10];
-  const tickStep = niceSteps.find(s => s >= rawStep) || 10;
+  const tickStep = NICE_STEPS.find(s => s >= rawStep) || 300;
 
   ctx.strokeStyle = '#e8eaf0';
   ctx.lineWidth = 1;
@@ -1499,8 +1510,7 @@ canvas.addEventListener('contextmenu', e => {
 function snapTime(t) {
   if (!state.showGrid) return t;
   const rawStep = 50 / state.scale;
-  const niceSteps = [0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10];
-  const step = niceSteps.find(s => s >= rawStep) || 10;
+  const step = NICE_STEPS.find(s => s >= rawStep) || 300;
   const snapped = Math.round(t / step) * step;
   // グリッドに近い（1/4 step 以内）場合のみ吸着
   return Math.abs(t - snapped) < step * 0.25 ? snapped : t;
@@ -2097,8 +2107,7 @@ function buildSVG() {
 
   // 目盛り
   const rawStep = 50 / state.scale;
-  const niceSteps = [0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10];
-  const tickStep = niceSteps.find(s => s >= rawStep) || 10;
+  const tickStep = NICE_STEPS.find(s => s >= rawStep) || 300;
   for (let t = 0; t <= state.totalTime + tickStep; t = Math.round((t + tickStep) * 1000) / 1000) {
     const x = timeToX(t);
     if (x <= LABEL_WIDTH || x >= W) continue;
